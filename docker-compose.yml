@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aidm_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aidungeonmaster}
+      POSTGRES_USER: ${POSTGRES_USER:-dmuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dmuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aidm_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: aidm_redis
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aidm_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aidm_backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-4000}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-aidungeonmaster}
+      POSTGRES_USER: ${POSTGRES_USER:-dmuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      XAI_API_KEY: ${XAI_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      LLAMACPP_BASE_URL: ${LLAMACPP_BASE_URL}
+      LOCALAI_BASE_URL: ${LOCALAI_BASE_URL}
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-openai}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4-turbo-preview}
+      FALLBACK_PROVIDER: ${FALLBACK_PROVIDER}
+      FALLBACK_MODEL: ${FALLBACK_MODEL}
+      MAX_REQUESTS_PER_MINUTE: ${MAX_REQUESTS_PER_MINUTE:-60}
+      REQUEST_QUEUE_TIMEOUT: ${REQUEST_QUEUE_TIMEOUT:-30000}
+      MAX_TOKENS_PER_REQUEST: ${MAX_TOKENS_PER_REQUEST:-4000}
+      SESSION_TIMEOUT_HOURS: ${SESSION_TIMEOUT_HOURS:-24}
+      AUTOSAVE_INTERVAL_SECONDS: ${AUTOSAVE_INTERVAL_SECONDS:-60}
+      MAX_SAVE_SLOTS: ${MAX_SAVE_SLOTS:-10}
+      JWT_SECRET: ${JWT_SECRET:-change_this_secret_key}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aidm_network
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aidm_frontend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:4000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - aidm_network
+    command: npm run dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  aidm_network:
+    driver: bridge

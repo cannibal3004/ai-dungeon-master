@@ -1,0 +1,30 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "roots": ["<rootDir>/src"],
+  "testMatch": ["**/__tests__/**/*.test.ts"],
+  "moduleFileExtensions": ["ts", "tsx", "js", "jsx", "json", "node"],
+  "collectCoverageFrom": [
+    "src/**/*.ts",
+    "!src/**/*.d.ts",
+    "!src/**/index.ts",
+    "!src/**/*.routes.ts",
+    "!src/utils/logger.ts"
+  ],
+  "coveragePathIgnorePatterns": [
+    "/node_modules/",
+    "/dist/",
+    "/__tests__/"
+  ],
+  "setupFilesAfterEnv": ["<rootDir>/src/__tests__/setup.ts"],
+  "testTimeout": 10000,
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/dist/$1",
+    "^\\.\\./(services|models|utils|rules|middleware|llm|websocket)/([^/]+)$": "<rootDir>/dist/$1/$2.js"
+  },
+  "transform": {
+    "^.+\\.tsx?$": ["ts-jest", {
+      "tsconfig": "tsconfig.jest.json"
+    }]
+  }
+}

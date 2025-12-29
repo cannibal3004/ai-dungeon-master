@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noFallthroughCasesInSwitch": false,
+    "rootDir": "./src",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["dist/*"],
+      "../../services/*": ["dist/services/*"],
+      "../../models/*": ["dist/models/*"],
+      "../../utils/*": ["dist/utils/*"],
+      "../../rules/*": ["dist/rules/*"],
+      "../../middleware/*": ["dist/middleware/*"],
+      "../../llm/*": ["dist/llm/*"],
+      "../../websocket/*": ["dist/websocket/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+
