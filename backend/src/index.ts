@@ -10,6 +10,7 @@ import { initializeRedis } from './utils/redis';
 import { logger } from './utils/logger';
 import { errorHandler } from './middleware/errorHandler';
 import { setupWebSocket } from './websocket';
+import fs from 'fs';
 
 // Import routes
 import authRoutes from './routes/auth.routes';
@@ -41,6 +42,11 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve generated audio files (TTS)
+const audioPath = path.resolve(__dirname, '..', 'audio');
+try { fs.mkdirSync(audioPath, { recursive: true }); } catch {}
+app.use('/audio', express.static(audioPath));
 
 // Health check
 app.get('/health', (_req, res) => {

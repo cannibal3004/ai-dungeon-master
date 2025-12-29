@@ -364,6 +364,7 @@ export default function Game() {
       inventoryChanges?: { itemsAdded: string[]; itemsRemoved: string[]; goldChange: number };
       characterId?: string;
       enemyInfo?: any[];
+      audioUrl?: string;
     }) => {
       addMessage('narrative', data.narrative);
       // Apply inventory changes if they're for this character
@@ -373,6 +374,13 @@ export default function Game() {
       // Update enemy info panel if provided
       if (Array.isArray(data.enemyInfo) && data.enemyInfo.length > 0) {
         setEnemyInfo(data.enemyInfo);
+      }
+      // Play TTS audio if available and enabled
+      if (data.audioUrl) {
+        setLastAudioUrl(data.audioUrl);
+        if (ttsEnabled) {
+          playAudio(data.audioUrl);
+        }
       }
       // Refresh world entities since DM may have mentioned new ones
       fetchWorldEntities();
@@ -445,6 +453,118 @@ export default function Game() {
     };
     setMessages((prev) => [...prev, message]);
   };
+  // TTS toggle and player state
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [audioCurrent, setAudioCurrent] = useState<number>(0);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioUnlocked, setAudioUnlocked] = useState<boolean>(false);
+  const audioCtxRef = useRef<any>(null);
+
+  const unlockAudio = () => {
+    if (audioUnlocked) return;
+    try {
+      const AudioContextCls = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextCls) {
+        setAudioUnlocked(true);
+        return;
+      }
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContextCls();
+      }
+      const ctx = audioCtxRef.current as AudioContext;
+      if (ctx.state === 'suspended') {
+        ctx.resume?.();
+      }
+      // Play a 1-frame silent buffer to satisfy gesture requirement
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      source.disconnect();
+      setAudioUnlocked(true);
+    } catch {
+      // If anything fails, still mark as unlocked to avoid loops
+      setAudioUnlocked(true);
+    }
+  };
+
+  const playAudio = async (url?: string) => {
+    try {
+      if (!audioRef.current) return;
+      const audio = audioRef.current;
+      if (url && audio.src !== url) {
+        audio.src = url;
+      }
+      await audio.play();
+    } catch {
+      // ignore
+    }
+  };
+
+  const pauseAudio = () => {
+    if (!audioRef.current) return;
+    audioRef.current.pause();
+  };
+
+  const stopAudio = () => {
+    if (!audioRef.current) return;
+    audioRef.current.pause();
+    audioRef.current.currentTime = 0;
+  };
+
+  // Fallback priming effect (kept, but onChange handler also calls unlock synchronously)
+  useEffect(() => {
+    if (!ttsEnabled || audioUnlocked) return;
+    try {
+      const silentMp3 =
+        'data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+      const a = new Audio(silentMp3);
+      a.play().catch(() => {/* ignore */});
+    } catch {/* ignore */}
+  }, [ttsEnabled, audioUnlocked]);
+
+  // Also unlock on first user interaction anywhere on the page
+  useEffect(() => {
+    if (audioUnlocked) return;
+    const handler = () => unlockAudio();
+    window.addEventListener('pointerdown', handler, { once: true } as any);
+    window.addEventListener('keydown', handler, { once: true } as any);
+    return () => {
+      window.removeEventListener('pointerdown', handler);
+      window.removeEventListener('keydown', handler);
+    };
+  }, [audioUnlocked]);
+
+  // Initialize shared audio element and listeners
+  useEffect(() => {
+    const audio = new Audio();
+    audioRef.current = audio;
+    const onTime = () => setAudioCurrent(audio.currentTime || 0);
+    const onMeta = () => setAudioDuration(isFinite(audio.duration) ? audio.duration : 0);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    const onEnd = () => setIsPlaying(false);
+    audio.addEventListener('timeupdate', onTime);
+    audio.addEventListener('loadedmetadata', onMeta);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onEnd);
+    return () => {
+      audio.pause();
+      audio.src = '';
+      audio.removeEventListener('timeupdate', onTime);
+      audio.removeEventListener('loadedmetadata', onMeta);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onEnd);
+      audioRef.current = null;
+    };
+  }, []);
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -489,6 +609,8 @@ export default function Game() {
   };
 
   const startAdventure = async () => {
+    // Ensure audio gets unlocked on first meaningful user action
+    unlockAudio();
     setLoading(true);
     try {
       if (socketRef.current?.connected) {
@@ -552,6 +674,74 @@ export default function Game() {
         }}>
           Logout
         </button>
+        {/* TTS Toggle */}
+        <label style={{ marginLeft: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input
+            type="checkbox"
+            checked={ttsEnabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setTtsEnabled(enabled);
+              if (enabled) {
+                // Run unlock immediately within the user gesture handler for reliability
+                unlockAudio();
+                if (lastAudioUrl) {
+                  playAudio(lastAudioUrl);
+                }
+              } else {
+                pauseAudio();
+              }
+            }}
+          />
+          <span>🔊 Narrator Voice</span>
+        </label>
+        {/* Simple audio controls */}
+        <div style={{ marginLeft: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+          <button
+            onClick={() => {
+              if (!lastAudioUrl) return;
+              if (isPlaying) pauseAudio(); else playAudio(lastAudioUrl);
+            }}
+            disabled={!lastAudioUrl}
+            style={{
+              padding: '0.35rem 0.6rem',
+              borderRadius: '4px',
+              border: '1px solid rgba(255,255,255,0.5)',
+              background: 'rgba(255,255,255,0.15)',
+              color: 'white',
+              cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
+            }}
+          >{isPlaying ? '⏸ Pause' : '▶ Play'}</button>
+          <button
+            onClick={() => { if (lastAudioUrl) { stopAudio(); playAudio(lastAudioUrl); } }}
+            disabled={!lastAudioUrl}
+            style={{
+              padding: '0.35rem 0.6rem',
+              borderRadius: '4px',
+              border: '1px solid rgba(255,255,255,0.5)',
+              background: 'rgba(255,255,255,0.15)',
+              color: 'white',
+              cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
+            }}
+          >↺ Replay</button>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', minWidth: '220px' }}>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(1, Math.floor(audioDuration))}
+              value={Math.floor(audioCurrent)}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setAudioCurrent(v);
+                if (audioRef.current) audioRef.current.currentTime = v;
+              }}
+              style={{ width: '140px' }}
+            />
+            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {new Date(Math.floor(audioCurrent) * 1000).toISOString().substr(14, 5)} / {new Date(Math.floor(audioDuration) * 1000).toISOString().substr(14, 5)}
+            </span>
+          </div>
+        </div>
       </header>
 
       {/* Status bar */}

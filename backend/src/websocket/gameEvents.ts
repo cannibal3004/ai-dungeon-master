@@ -127,6 +127,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
         characterId: data.characterId,
         timestamp: new Date(),
         enemyInfo: (result as any).enemyInfo || [],
+        audioUrl: (result as any).audioUrl,
       };
 
       logger.info('Sending payload to frontend:', {

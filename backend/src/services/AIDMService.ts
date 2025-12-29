@@ -21,6 +21,7 @@ import { AppError } from '../middleware/errorHandler';
 import { WorldEntityModel } from '../models/WorldEntity';
 import { QuestModel } from '../models/Quest';
 import { CHARACTER_TOOLS, ToolExecutor } from './tools';
+import { TTSService } from './TTSService';
 
 export interface NPCState {
   id: string;
@@ -38,6 +39,7 @@ export class AIDMService {
   private questModel: QuestModel;
   private redis: Redis | null = null;
   private toolExecutor: ToolExecutor;
+  private ttsService: TTSService;
   // Context/tokens limits can be added here if needed
 
   constructor() {
@@ -46,6 +48,7 @@ export class AIDMService {
     this.worldEntityModel = new WorldEntityModel();
     this.questModel = new QuestModel();
     this.toolExecutor = new ToolExecutor();
+    this.ttsService = new TTSService();
     // Initialize redis if available
     (async () => {
       try {
@@ -108,7 +111,7 @@ export class AIDMService {
     playerAction: string,
     userId?: string,
     characterId?: string
-  ): Promise<{ narrative: string; inventoryChanges: { itemsAdded: string[]; itemsRemoved: string[]; goldChange: number }; combatStart?: { players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }> }; enemyInfo?: any[] }>
+  ): Promise<{ narrative: string; inventoryChanges: { itemsAdded: string[]; itemsRemoved: string[]; goldChange: number }; combatStart?: { players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }> }; enemyInfo?: any[]; audioUrl?: string }>
   {
     // Build context from database
     const context = await this.buildContext(campaignId, characterId);
@@ -241,11 +244,23 @@ export class AIDMService {
       this.extractAndStoreEntities(campaignId, finalNarrative)
     ]);
 
+    let audioUrl: string | undefined;
+    try {
+      const sessionId = await this.getActiveSessionId(campaignId);
+      if (sessionId && this.ttsService.isEnabled()) {
+        const audio = await this.ttsService.synthesize(sessionId, finalNarrative);
+        audioUrl = audio?.url;
+      }
+    } catch (err) {
+      logger.warn('TTS generation skipped due to error', err);
+    }
+
     return {
       narrative: finalNarrative + (toolResults.length > 0 ? '\n\n' + toolResults.join('\n') : ''),
       inventoryChanges,
       combatStart: combatStartPayload,
       enemyInfo: enemyInfoCollected,
+      audioUrl,
     };
   }
 
@@ -570,6 +585,19 @@ export class AIDMService {
     const sessionId = await this.getActiveSessionId(campaignId);
     if (!sessionId) {
       return; // No active session; skip chat logging
+    }
+
+    // Ensure the sessions record exists (foreign key requirement for chat_history)
+    // This handles cases where the sessions record wasn't created in startSession
+    try {
+      await this.pool.query(
+        `INSERT INTO sessions (id, campaign_id) VALUES ($1, $2) 
+         ON CONFLICT (id) DO NOTHING`,
+        [sessionId, campaignId]
+      );
+    } catch (err) {
+      // Log but don't fail if sessions insert has issues
+      logger.warn('Failed to ensure sessions record exists:', err);
     }
 
     const sender = role === 'assistant' ? 'dm' : role === 'user' ? 'player' : 'system';

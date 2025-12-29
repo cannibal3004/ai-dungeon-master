@@ -54,6 +54,13 @@ export class SessionService {
     const activeSession = await this.getActiveSession(campaignId);
     if (activeSession) {
       logger.info(`Reusing active session ${activeSession.id} for campaign ${campaignId}`);
+      
+      // Ensure the sessions record exists (foreign key for chat_history)
+      await this.pool.query(
+        'INSERT INTO sessions (id, campaign_id) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING',
+        [activeSession.id, campaignId]
+      );
+      
       return activeSession;
     }
 
