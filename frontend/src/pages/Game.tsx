@@ -13,6 +13,7 @@ interface Message {
   type: 'narrative' | 'action' | 'system';
   content: string;
   timestamp: Date;
+  audioUrl?: string;
 }
 
 interface AbilityScores {
@@ -365,8 +366,9 @@ export default function Game() {
       characterId?: string;
       enemyInfo?: any[];
       audioUrl?: string;
+      ambienceUrl?: string;
     }) => {
-      addMessage('narrative', data.narrative);
+      addMessage('narrative', data.narrative, data.audioUrl);
       // Apply inventory changes if they're for this character
       if (data.inventoryChanges && (!data.characterId || data.characterId === characterId)) {
         applyInventoryChanges(data.inventoryChanges);
@@ -377,9 +379,21 @@ export default function Game() {
       }
       // Play TTS audio if available and enabled
       if (data.audioUrl) {
+        console.log('[Narrative] Got audioUrl:', data.audioUrl, 'ttsEnabledRef.current:', ttsEnabledRef.current);
         setLastAudioUrl(data.audioUrl);
-        if (ttsEnabled) {
-          playAudio(data.audioUrl);
+        if (ttsEnabledRef.current) {
+          console.log('[Narrative] TTS is enabled, calling playAudioWithAutoplay');
+          unlockAudio();
+          playAudioWithAutoplay(data.audioUrl);
+        } else {
+          console.log('[Narrative] TTS is disabled, skipping autoplay');
+        }
+      }
+      if (data.ambienceUrl) {
+        const resolved = resolveAudioUrl(data.ambienceUrl);
+        setAmbienceUrl(resolved);
+        if (ambienceOn) {
+          playAmbience(resolved);
         }
       }
       // Refresh world entities since DM may have mentioned new ones
@@ -444,12 +458,13 @@ export default function Game() {
     socketRef.current = socket;
   };
 
-  const addMessage = (type: 'narrative' | 'action' | 'system', content: string) => {
+  const addMessage = (type: 'narrative' | 'action' | 'system', content: string, audioUrl?: string) => {
     const message: Message = {
       id: Date.now().toString(),
       type,
       content,
       timestamp: new Date(),
+      audioUrl,
     };
     setMessages((prev) => [...prev, message]);
   };
@@ -462,6 +477,16 @@ export default function Game() {
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const [audioUnlocked, setAudioUnlocked] = useState<boolean>(false);
   const audioCtxRef = useRef<any>(null);
+  const ambienceRef = useRef<HTMLAudioElement | null>(null);
+  const [ambienceUrl, setAmbienceUrl] = useState<string | null>(null);
+  const [ambienceOn, setAmbienceOn] = useState<boolean>(true);
+  const [ambienceVolume, setAmbienceVolume] = useState<number>(0.5);
+  const [showNarrationMenu, setShowNarrationMenu] = useState<boolean>(false);
+  const [showAmbienceMenu, setShowAmbienceMenu] = useState<boolean>(false);
+  const narrationMenuRef = useRef<HTMLDivElement | null>(null);
+  const ambienceMenuRef = useRef<HTMLDivElement | null>(null);
+  const ttsEnabledRef = useRef<boolean>(false);
+  const ambienceOnRef = useRef<boolean>(true);
 
   const unlockAudio = () => {
     if (audioUnlocked) return;
@@ -486,23 +511,118 @@ export default function Game() {
       source.start(0);
       source.disconnect();
       setAudioUnlocked(true);
-    } catch {
+    } catch (error) {
       // If anything fails, still mark as unlocked to avoid loops
+      console.error('Audio unlock failed: assuming unlocked');
+      console.error('Error details:', (error as any).toString());
       setAudioUnlocked(true);
     }
+  };
+
+  const resolveAudioUrl = (url: string) => {
+    if (!url) return url;
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
+    const origin = window?.location?.origin || '';
+    return url.startsWith('/') ? `${origin}${url}` : `${origin}/${url}`;
   };
 
   const playAudio = async (url?: string) => {
     try {
       if (!audioRef.current) return;
+      unlockAudio();
       const audio = audioRef.current;
-      if (url && audio.src !== url) {
-        audio.src = url;
+      if (url) {
+        const resolved = resolveAudioUrl(url);
+        if (audio.src !== resolved) {
+          audio.src = resolved;
+          audio.load();
+        }
       }
-      await audio.play();
+      const playPromise = audio.play();
+      if (playPromise) {
+        await playPromise;
+      }
+    } catch (err) {
+      console.warn('Audio playback failed:', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const playAudioWithAutoplay = async (url?: string) => {
+    console.log('[Autoplay] Called with URL:', url, 'ttsEnabled:', ttsEnabled);
+    if (!audioRef.current) {
+      console.warn('[Autoplay] audioRef.current is null');
+      return;
+    }
+    if (!url) {
+      console.warn('[Autoplay] No URL provided');
+      return;
+    }
+    try {
+      console.log('[Autoplay] Unlocking audio context');
+      unlockAudio();
+      const audio = audioRef.current;
+      const resolved = resolveAudioUrl(url);
+      console.log('[Autoplay] Resolved URL:', resolved, 'Previous src:', audio.src);
+      
+      if (audio.src !== resolved) {
+        console.log('[Autoplay] Setting new src and calling load()');
+        audio.src = resolved;
+        audio.load();
+      }
+
+      // Wait for audio to be ready before playing (max 2 seconds)
+      console.log('[Autoplay] Current readyState:', audio.readyState);
+      if (audio.readyState < 2) {
+        console.log('[Autoplay] Waiting for canplay event...');
+        await new Promise<void>((resolve) => {
+          const onCanPlay = () => {
+            console.log('[Autoplay] canplay event fired');
+            audio.removeEventListener('canplay', onCanPlay);
+            resolve();
+          };
+          audio.addEventListener('canplay', onCanPlay);
+          const timeoutId = setTimeout(() => {
+            console.log('[Autoplay] canplay timeout, proceeding anyway');
+            audio.removeEventListener('canplay', onCanPlay);
+            resolve();
+          }, 2000);
+        });
+      } else {
+        console.log('[Autoplay] readyState >= 2, ready to play immediately');
+      }
+
+      console.log('[Autoplay] Calling audio.play()');
+      const playPromise = audio.play();
+      if (playPromise) {
+        await playPromise;
+        console.log('[Autoplay] Playback started successfully');
+      }
+    } catch (err) {
+      console.error('[Autoplay] Error:', err instanceof Error ? err.message : String(err), err);
+    }
+  };
+
+  const playAmbience = async (url?: string) => {
+    try {
+      if (!ambienceRef.current || !ambienceOn) return;
+      unlockAudio();
+      const a = ambienceRef.current;
+      if (url) {
+        const resolved = resolveAudioUrl(url);
+        if (a.src !== resolved) {
+          a.src = resolved;
+          a.load();
+        }
+      }
+      await a.play();
     } catch {
       // ignore
     }
+  };
+
+  const pauseAmbience = () => {
+    if (!ambienceRef.current) return;
+    ambienceRef.current.pause();
   };
 
   const pauseAudio = () => {
@@ -542,6 +662,9 @@ export default function Game() {
   // Initialize shared audio element and listeners
   useEffect(() => {
     const audio = new Audio();
+    audio.playsInline = true;
+    audio.preload = 'auto';
+    audio.crossOrigin = 'anonymous';
     audioRef.current = audio;
     const onTime = () => setAudioCurrent(audio.currentTime || 0);
     const onMeta = () => setAudioDuration(isFinite(audio.duration) ? audio.duration : 0);
@@ -553,6 +676,17 @@ export default function Game() {
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnd);
+    // Ambience element (looping)
+    const ambience = new Audio();
+    ambience.playsInline = true;
+    ambience.preload = 'auto';
+    ambience.crossOrigin = 'anonymous';
+    ambience.loop = true;
+    ambience.volume = ambienceVolume;
+    ambienceRef.current = ambience;
+
+    const onAmbienceEnded = () => { /* loop keeps playing */ };
+    ambience.addEventListener('ended', onAmbienceEnded);
     return () => {
       audio.pause();
       audio.src = '';
@@ -562,8 +696,45 @@ export default function Game() {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnd);
       audioRef.current = null;
+
+      ambience.pause();
+      ambience.src = '';
+      ambience.removeEventListener('ended', onAmbienceEnded);
+      ambienceRef.current = null;
     };
+  // ambienceVolume intentionally omitted from deps; volume handled via setter below
   }, []);
+
+  useEffect(() => {
+    if (ambienceRef.current) {
+      ambienceRef.current.volume = ambienceVolume;
+    }
+  }, [ambienceVolume]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent | PointerEvent) => {
+      const target = e.target as Node | null;
+      if (showNarrationMenu && narrationMenuRef.current && target && !narrationMenuRef.current.contains(target)) {
+        setShowNarrationMenu(false);
+      }
+      if (showAmbienceMenu && ambienceMenuRef.current && target && !ambienceMenuRef.current.contains(target)) {
+        setShowAmbienceMenu(false);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showNarrationMenu) setShowNarrationMenu(false);
+        if (showAmbienceMenu) setShowAmbienceMenu(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutside);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutside);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [showNarrationMenu, showAmbienceMenu]);
 
 
   const scrollToBottom = () => {
@@ -664,82 +835,227 @@ export default function Game() {
           </button>
           <span style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>AI Dungeon Master</span>
         </div>
-        <button onClick={logout} style={{
-          padding: '0.5rem 1rem',
-          background: 'rgba(255,255,255,0.2)',
-          color: 'white',
-          border: '1px solid white',
-          borderRadius: '4px',
-          cursor: 'pointer'
-        }}>
-          Logout
-        </button>
-        {/* TTS Toggle */}
-        <label style={{ marginLeft: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            checked={ttsEnabled}
-            onChange={(e) => {
-              const enabled = e.target.checked;
-              setTtsEnabled(enabled);
-              if (enabled) {
-                // Run unlock immediately within the user gesture handler for reliability
-                unlockAudio();
-                if (lastAudioUrl) {
-                  playAudio(lastAudioUrl);
-                }
-              } else {
-                pauseAudio();
-              }
-            }}
-          />
-          <span>🔊 Narrator Voice</span>
-        </label>
-        {/* Simple audio controls */}
-        <div style={{ marginLeft: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-          <button
-            onClick={() => {
-              if (!lastAudioUrl) return;
-              if (isPlaying) pauseAudio(); else playAudio(lastAudioUrl);
-            }}
-            disabled={!lastAudioUrl}
-            style={{
-              padding: '0.35rem 0.6rem',
-              borderRadius: '4px',
-              border: '1px solid rgba(255,255,255,0.5)',
-              background: 'rgba(255,255,255,0.15)',
-              color: 'white',
-              cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
-            }}
-          >{isPlaying ? '⏸ Pause' : '▶ Play'}</button>
-          <button
-            onClick={() => { if (lastAudioUrl) { stopAudio(); playAudio(lastAudioUrl); } }}
-            disabled={!lastAudioUrl}
-            style={{
-              padding: '0.35rem 0.6rem',
-              borderRadius: '4px',
-              border: '1px solid rgba(255,255,255,0.5)',
-              background: 'rgba(255,255,255,0.15)',
-              color: 'white',
-              cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
-            }}
-          >↺ Replay</button>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', minWidth: '220px' }}>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(1, Math.floor(audioDuration))}
-              value={Math.floor(audioCurrent)}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setAudioCurrent(v);
-                if (audioRef.current) audioRef.current.currentTime = v;
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem' }}>
+          <button onClick={logout} style={{
+            padding: '0.55rem 1.15rem',
+            background: 'rgba(255,255,255,0.22)',
+            color: 'white',
+            border: '1px solid rgba(255,255,255,0.6)',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 600
+          }}>
+            Logout
+          </button>
+          {/* Narration dropdown */}
+          <div style={{ position: 'relative' }} ref={narrationMenuRef}>
+            <button
+              aria-label="Narration audio controls"
+              title="Narration audio controls"
+              onClick={() => {
+                setShowNarrationMenu((v) => !v);
+                setShowAmbienceMenu(false);
               }}
-              style={{ width: '140px' }}
-            />
-            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-              {new Date(Math.floor(audioCurrent) * 1000).toISOString().substr(14, 5)} / {new Date(Math.floor(audioDuration) * 1000).toISOString().substr(14, 5)}
-            </span>
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.22)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '1.15rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.25)'
+              }}
+            >🗣️</button>
+            {showNarrationMenu && (
+              <div style={{
+                position: 'absolute',
+                right: 0,
+                marginTop: '0.65rem',
+                minWidth: '280px',
+                background: '#0f172a',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: '10px',
+                boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
+                padding: '0.9rem',
+                zIndex: 30
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
+                  <span style={{ fontWeight: 700 }}>Narrator Voice</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.9rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={ttsEnabled}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setTtsEnabled(enabled);
+                        ttsEnabledRef.current = enabled;
+                        if (enabled) {
+                          unlockAudio();
+                          if (lastAudioUrl) playAudio(lastAudioUrl);
+                        } else {
+                          pauseAudio();
+                        }
+                      }}
+                    />
+                    <span>On</span>
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.8rem' }}>
+                  <button
+                    onClick={() => {
+                      if (!lastAudioUrl) return;
+                      if (isPlaying) pauseAudio(); else playAudio(lastAudioUrl);
+                    }}
+                    disabled={!lastAudioUrl}
+                    style={{
+                      flex: 1,
+                      padding: '0.5rem 0.65rem',
+                      borderRadius: '7px',
+                      border: '1px solid rgba(255,255,255,0.22)',
+                      background: 'rgba(255,255,255,0.1)',
+                      color: 'white',
+                      cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
+                    }}
+                  >{isPlaying ? 'Pause' : 'Play'}</button>
+                  <button
+                    onClick={() => { if (lastAudioUrl) { stopAudio(); playAudio(lastAudioUrl); } }}
+                    disabled={!lastAudioUrl}
+                    style={{
+                      padding: '0.5rem 0.65rem',
+                      borderRadius: '7px',
+                      border: '1px solid rgba(255,255,255,0.22)',
+                      background: 'rgba(255,255,255,0.1)',
+                      color: 'white',
+                      cursor: lastAudioUrl ? 'pointer' : 'not-allowed'
+                    }}
+                  >Replay</button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(1, Math.floor(audioDuration))}
+                    value={Math.floor(audioCurrent)}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setAudioCurrent(v);
+                      if (audioRef.current) audioRef.current.currentTime = v;
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.9rem', color: '#cbd5f5' }}>
+                    {new Date(Math.floor(audioCurrent) * 1000).toISOString().substr(14, 5)} / {new Date(Math.floor(audioDuration) * 1000).toISOString().substr(14, 5)}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Ambience dropdown */}
+          <div style={{ position: 'relative' }} ref={ambienceMenuRef}>
+            <button
+              aria-label="Ambience and music controls"
+              title="Ambience and music controls"
+              onClick={() => {
+                setShowAmbienceMenu((v) => !v);
+                setShowNarrationMenu(false);
+              }}
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.22)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '1.15rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.25)'
+              }}
+            >🎵</button>
+            {showAmbienceMenu && (
+              <div style={{
+                position: 'absolute',
+                right: 0,
+                marginTop: '0.65rem',
+                minWidth: '260px',
+                background: '#0f172a',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: '10px',
+                boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
+                padding: '0.9rem',
+                zIndex: 30
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                  <span style={{ fontWeight: 700 }}>Background Music</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.9rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={ambienceOn}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setAmbienceOn(on);
+                        if (on && ambienceUrl) {
+                          unlockAudio();
+                          playAmbience(ambienceUrl);
+                        } else {
+                          pauseAmbience();
+                        }
+                      }}
+                    />
+                    <span>On</span>
+                  </label>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '0.95rem', whiteSpace: 'nowrap' }}>Volume</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={ambienceVolume}
+                    onChange={(e) => setAmbienceVolume(Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                </div>
+                {ambienceUrl && (
+                  <div style={{ marginTop: '0.85rem', display: 'flex', gap: '0.55rem' }}>
+                    <button
+                      onClick={() => playAmbience(ambienceUrl)}
+                      style={{
+                        flex: 1,
+                        padding: '0.5rem 0.65rem',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(255,255,255,0.22)',
+                        background: 'rgba(255,255,255,0.1)',
+                        color: 'white',
+                        cursor: 'pointer'
+                      }}
+                    >Play</button>
+                    <button
+                      onClick={() => pauseAmbience()}
+                      style={{
+                        padding: '0.5rem 0.65rem',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(255,255,255,0.22)',
+                        background: 'rgba(255,255,255,0.1)',
+                        color: 'white',
+                        cursor: 'pointer'
+                      }}
+                    >Pause</button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -869,17 +1185,49 @@ export default function Game() {
                     }}
                   >
                     <div style={{
-                      fontSize: '0.85rem',
-                      color: message.type === 'narrative' 
-                        ? '#667eea' 
-                        : message.type === 'action'
-                        ? '#4caf50'
-                        : '#ff9800',
+                      position: 'relative',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                       marginBottom: '0.5rem',
-                      fontWeight: 'bold',
-                      textTransform: 'uppercase'
+                      minHeight: '32px'
                     }}>
-                      {message.type === 'narrative' ? '🎭 Dungeon Master' : message.type === 'action' ? '⚔️ Your Action' : '⚠️ System'}
+                      <div style={{
+                        fontSize: '0.85rem',
+                        color: message.type === 'narrative' 
+                          ? '#667eea' 
+                          : message.type === 'action'
+                          ? '#4caf50'
+                          : '#ff9800',
+                        fontWeight: 'bold',
+                        textTransform: 'uppercase',
+                        textAlign: 'center',
+                        width: '100%'
+                      }}>
+                        {message.type === 'narrative' ? '🎭 Dungeon Master' : message.type === 'action' ? '⚔️ Your Action' : '⚠️ System'}
+                      </div>
+                      {message.audioUrl && (
+                        <button
+                          onClick={() => {
+                            const url = resolveAudioUrl(message.audioUrl!);
+                            setLastAudioUrl(url);
+                            playAudio(url);
+                          }}
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            padding: '0.3rem 0.65rem',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(255,255,255,0.3)',
+                            background: 'rgba(255,255,255,0.12)',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem'
+                          }}
+                        >▶ Play Clip</button>
+                      )}
                     </div>
                     <div style={{ 
                       color: '#e0e0e0',

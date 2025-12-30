@@ -43,8 +43,12 @@ pgdata/
 coverage/
 .nyc_output/
 
-#logs
+# logs
 logs/
+
+# Sound files
+*.mp3
+backend/audio
 
 #misc reference files
 openai_pricing.csv

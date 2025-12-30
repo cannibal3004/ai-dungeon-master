@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -56,9 +54,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       XAI_API_KEY: ${XAI_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
-      LLAMACPP_BASE_URL: ${LLAMACPP_BASE_URL}
-      LOCALAI_BASE_URL: ${LOCALAI_BASE_URL}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://localhost:11434}
+      LLAMACPP_BASE_URL: ${LLAMACPP_BASE_URL:-http://localhost:8080}
+      LOCALAI_BASE_URL: ${LOCALAI_BASE_URL:-http://localhost:8080}
       DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-openai}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4-turbo-preview}
       FALLBACK_PROVIDER: ${FALLBACK_PROVIDER}

@@ -7,11 +7,11 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'migrate', 'reset-db', 'test', 'clear-logs')]
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'migrate', 'reset-db', 'test', 'clear-logs', 'build')]
     [string]$Action = 'status',
     
     [Parameter()]
-    [ValidateSet('all', 'backend', 'frontend')]
+    [ValidateSet('all', 'backend', 'frontend', 'postgres', 'redis')]
     [string]$Target = 'all',
 
     [Parameter(Mandatory = $false)]
@@ -27,6 +27,8 @@ param(
 $ErrorActionPreference = 'SilentlyContinue'
 $BackendPort = 4000
 $FrontendPort = 3000
+$RedisPort = 6379
+$PostgresPort = 5432
 $LogDir = Join-Path $PSScriptRoot 'logs'
 $BackendLog = Join-Path $LogDir 'backend.log'
 $FrontendLog = Join-Path $LogDir 'frontend.log'
@@ -69,10 +71,52 @@ function Stop-DevServer {
             Write-Host "Frontend not running on port $FrontendPort" -ForegroundColor Gray
         }
     }
+
+    if ($Service -eq 'postgres' -or $Service -eq 'all') {
+        if (docker ps -q --filter "name=aidm_postgres") {
+            Write-Host "Stopping PostgreSQL Docker container..." -ForegroundColor Yellow
+            docker compose -f docker-compose.yml stop postgres | Out-Null
+            Start-Sleep -Seconds 2
+        } else {
+            Write-Host "PostgreSQL Docker container not running" -ForegroundColor Gray
+        }
+    }
+
+    if ($Service -eq 'redis' -or $Service -eq 'all') {
+        if (docker ps -q --filter "name=aidm_redis") {
+            Write-Host "Stopping Redis Docker container..." -ForegroundColor Yellow
+            docker compose -f docker-compose.yml stop redis | Out-Null
+            Start-Sleep -Seconds 2
+        } else {
+            Write-Host "Redis Docker container not running" -ForegroundColor Gray
+        }
+    }
 }
 
 function Start-DevServer {
     param([string]$Service)
+
+    if ($Service -eq 'postgres' -or $Service -eq 'all') {
+        $proc = docker ps -q --filter "name=aidm_postgres"
+        if (-not $proc) {
+            Write-Host "Starting PostgreSQL Docker container..." -ForegroundColor Green
+            docker compose -f docker-compose.yml up -d postgres | Out-Null
+            Start-Sleep -Seconds 3
+        } else {
+            Write-Host "PostgreSQL Docker container already running" -ForegroundColor Cyan
+        }
+    }
+
+    if ($Service -eq 'redis' -or $Service -eq 'all') {
+        $proc = docker ps -q --filter "name=aidm_redis"
+        if (-not $proc) {
+            Write-Host "Starting Redis Docker container..." -ForegroundColor Green
+            docker compose -f docker-compose.yml up -d redis | Out-Null
+            Start-Sleep -Seconds 2
+        } else {
+            Write-Host "Redis Docker container already running" -ForegroundColor Cyan
+        }
+    }
     
     if ($Service -eq 'backend' -or $Service -eq 'all') {
         $proc = Get-PortProcess -Port $BackendPort
@@ -130,6 +174,24 @@ function Show-Status {
         Write-Host "STOPPED" -ForegroundColor Red
     }
     Write-Host ""
+    # Check PostgreSQL
+    Write-Host "PostgreSQL:           " -NoNewline -ForegroundColor Yellow
+    if (docker ps -q --filter "name=aidm_postgres") {
+        Write-Host "RUNNING" -ForegroundColor Green
+        Write-Host "  -> TCP localhost:$PostgresPort" -ForegroundColor Gray
+    } else {
+        Write-Host "STOPPED" -ForegroundColor Red
+    }
+    Write-Host ""
+    # Check Redis
+    Write-Host "Redis:                " -NoNewline -ForegroundColor Yellow
+    if (docker ps -q --filter "name=aidm_redis") {
+        Write-Host "RUNNING" -ForegroundColor Green
+        Write-Host "  -> TCP localhost:$RedisPort" -ForegroundColor Gray
+    } else {
+        Write-Host "STOPPED" -ForegroundColor Red
+    }
+    Write-Host ""
 }
 
 function Show-Logs {
@@ -154,11 +216,30 @@ function Show-Logs {
         }
     }
 
+    if ($Service -eq 'postgres' -or $Service -eq 'all') {
+        Write-Host "`n=== PostgreSQL Logs ===`n" -ForegroundColor Cyan
+        if ($Follow -and $Follow -eq $true) {
+            docker compose -f .\docker-compose.yml logs -f postgres
+        } else {
+            docker compose -f .\docker-compose.yml logs postgres --tail $Lines
+        }
+    }
+
+    if ($Service -eq 'redis' -or $Service -eq 'all') {
+        Write-Host "`n=== Redis Logs ===`n" -ForegroundColor Cyan
+        if ($Follow -and $Follow -eq $true) {
+            docker compose -f .\docker-compose.yml logs -f redis
+        } else {
+            docker compose -f .\docker-compose.yml logs redis --tail $Lines
+        }
+    }
 }
 
 function Clear-Logs {
     param([string]$Service)
 
+    $shouldRestartBackend = $false
+    $shouldRestartFrontend = $false
     Write-Host ""
     Write-Host "⚠️  WARNING: This will DELETE ALL LOG DATA!" -ForegroundColor Red
     Write-Host ""
@@ -174,7 +255,6 @@ function Clear-Logs {
 
     if ($Service -eq 'backend' -or $Service -eq 'all') {
         $backendRunning = Get-PortProcess -Port $BackendPort
-        $shouldRestartBackend = $false
         if ($backendRunning) {
             Write-Host "⚠️  Backend server is running. You must stop it before clearing logs." -ForegroundColor Yellow
             Write-Host ""
@@ -187,22 +267,18 @@ function Clear-Logs {
             if ($resp -eq 'yes') {
                 Write-Host "Stopping backend..." -ForegroundColor Yellow
                 Stop-DevServer -Service 'backend'
+                $shouldRestartBackend = $true
                 Write-Host "Clearing backend logs..." -ForegroundColor Cyan
                 Clear-Content -Path $BackendLog -ErrorAction SilentlyContinue
-                $shouldRestartBackend = $true
             } else {
                 Write-Host ""
                 Write-Host "Log clearing cancelled" -ForegroundColor Yellow
                 Write-Host ""
-                return
             }
-        } else {
-            $shouldRestartBackend = $false
         }
     }
     if ($Service -eq 'frontend' -or $Service -eq 'all') {
         $frontendRunning = Get-PortProcess -Port $FrontendPort
-        $shouldRestartFrontend = $false
         if ($frontendRunning) {
             Write-Host "⚠️  Frontend server is running. You must stop it before clearing logs." -ForegroundColor Yellow
             Write-Host ""
@@ -215,26 +291,23 @@ function Clear-Logs {
             if ($resp -eq 'yes') {
                 Write-Host "Stopping frontend..." -ForegroundColor Yellow
                 Stop-DevServer -Service 'frontend'
+                $shouldRestartFrontend = $true
                 Write-Host "Clearing frontend logs..." -ForegroundColor Cyan
                 Clear-Content -Path $FrontendLog -ErrorAction SilentlyContinue
-                $shouldRestartFrontend = $true
             } else {
                 Write-Host ""
                 Write-Host "Log clearing cancelled" -ForegroundColor Yellow
                 Write-Host ""
-                return
             }
-        } else {
-            $shouldRestartFrontend = $false
         }
-        if ($shouldRestartBackend) {
-            Write-Host "Restarting backend..." -ForegroundColor Yellow
-            Start-DevServer -Service 'backend'
-        }
-        if ($shouldRestartFrontend) {
-            Write-Host "Restarting frontend..." -ForegroundColor Yellow
-            Start-DevServer -Service 'frontend'
-        }
+    }
+    if ($shouldRestartBackend) {
+        Write-Host "Restarting backend..." -ForegroundColor Yellow
+        Start-DevServer -Service 'backend'
+    }
+    if ($shouldRestartFrontend) {
+        Write-Host "Restarting frontend..." -ForegroundColor Yellow
+        Start-DevServer -Service 'frontend'
     }
 }
 
@@ -443,6 +516,37 @@ switch ($Action) {
         Write-Host "Clearing logs for $Target..." -ForegroundColor Cyan
         Clear-Logs -Service $Target
     }
+    'build' {
+        Write-Host ""
+        Write-Host "Building projects for $Target..." -ForegroundColor Cyan
+        if ($Target -eq 'backend' -or $Target -eq 'all') {
+            Write-Host ""
+            Write-Host "Building backend..." -ForegroundColor Cyan
+            Write-Host ""
+            
+            Push-Location backend
+            npm run build
+            Pop-Location
+            
+            Write-Host ""
+            Write-Host "Backend build process completed." -ForegroundColor Green
+        }
+
+        if ($Target -eq 'frontend' -or $Target -eq 'all') {
+            Write-Host ""
+            Write-Host "Building frontend..." -ForegroundColor Cyan
+            Write-Host ""
+            
+            Push-Location frontend
+            npm run build
+            Pop-Location
+            
+            Write-Host ""
+            Write-Host "Frontend build process completed." -ForegroundColor Green
+        }
+        
+        Write-Host "Build process completed." -ForegroundColor Green
+    }   
     default {
         Write-Host "===================================================" -ForegroundColor DarkGray
         Write-Host "Usage: dev.ps1 [action] [-Target service]" -ForegroundColor Gray
@@ -457,8 +561,9 @@ switch ($Action) {
         Write-Host "  logs        - View server logs (tails last 50 lines)" -ForegroundColor Gray
         Write-Host "  clear-logs  - Clear log files" -ForegroundColor Gray
         Write-Host "  status      - Show server status (default)" -ForegroundColor Gray
+        Write-Host "  build       - Build backend and frontend projects" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "Targets: all (default), backend, frontend" -ForegroundColor Gray
+        Write-Host "Targets: all (default), backend, frontend, redis, postgres" -ForegroundColor Gray
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor White
         Write-Host "  dev.ps1 start                    # Start all servers" -ForegroundColor Gray

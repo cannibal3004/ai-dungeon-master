@@ -22,6 +22,7 @@ import { WorldEntityModel } from '../models/WorldEntity';
 import { QuestModel } from '../models/Quest';
 import { CHARACTER_TOOLS, ToolExecutor } from './tools';
 import { TTSService } from './TTSService';
+import { AudioFXService } from './AudioFXService';
 
 export interface NPCState {
   id: string;
@@ -40,6 +41,7 @@ export class AIDMService {
   private redis: Redis | null = null;
   private toolExecutor: ToolExecutor;
   private ttsService: TTSService;
+  private audioFxService: AudioFXService;
   // Context/tokens limits can be added here if needed
 
   constructor() {
@@ -49,6 +51,7 @@ export class AIDMService {
     this.questModel = new QuestModel();
     this.toolExecutor = new ToolExecutor();
     this.ttsService = new TTSService();
+    this.audioFxService = new AudioFXService();
     // Initialize redis if available
     (async () => {
       try {
@@ -111,14 +114,22 @@ export class AIDMService {
     playerAction: string,
     userId?: string,
     characterId?: string
-  ): Promise<{ narrative: string; inventoryChanges: { itemsAdded: string[]; itemsRemoved: string[]; goldChange: number }; combatStart?: { players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }> }; enemyInfo?: any[]; audioUrl?: string }>
+  ): Promise<{ narrative: string; inventoryChanges: { itemsAdded: string[]; itemsRemoved: string[]; goldChange: number }; combatStart?: { players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }> }; enemyInfo?: any[]; audioUrl?: string; ambienceUrl?: string }>
   {
     // Build context from database
     const context = await this.buildContext(campaignId, characterId);
+    const sessionId = await this.getActiveSessionId(campaignId);
 
     // Build prompt with context
     const messages = buildDMPrompt(context, playerAction);
     const { promptText, systemPrompt } = this.serializeMessages(messages);
+
+    console.log('\n\n========== NARRATIVE GENERATION ==========');
+    console.log('SYSTEM_PROMPT:');
+    console.log(systemPrompt);
+    console.log('\nUSER_PROMPT:');
+    console.log(promptText);
+    console.log('==========================================\n');
 
     // Generate response with tool calling enabled (if character ID provided)
     const narrativeCfg = this.getTaskConfig('narrative');
@@ -135,6 +146,12 @@ export class AIDMService {
       narrativeCfg.provider
     );
 
+    console.log('\n========== LLM RESPONSE ==========');
+    console.log('CONTENT:');
+    console.log(response.content);
+    console.log('\nTOOL_CALLS:', response.tool_calls ? JSON.stringify(response.tool_calls, null, 2) : 'none');
+    console.log('==================================\n');
+
     // Handle tool calls if present
     let toolResults: string[] = [];
     let combatStartPayload: { players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }> } | undefined;
@@ -142,13 +159,15 @@ export class AIDMService {
     let finalNarrative = response.content;
     
     if (response.tool_calls && response.tool_calls.length > 0 && characterId) {
-      logger.info(`LLM made ${response.tool_calls.length} tool calls`);
+      logger.info(`LLM_TOOL_EXECUTION: ${response.tool_calls.length} tool calls to execute`);
       
       const toolMessages: any[] = [];
       
       for (const toolCall of response.tool_calls) {
+        logger.info(`  Executing: ${toolCall.function.name} with args:`, toolCall.function.arguments);
         const result = await this.toolExecutor.executeTool(toolCall, characterId, campaignId);
         const parsedResult = JSON.parse(result.content);
+        logger.info(`  Result:`, JSON.stringify(parsedResult));
         
         // Add tool result to messages for second LLM call
         toolMessages.push({
@@ -245,8 +264,8 @@ export class AIDMService {
     ]);
 
     let audioUrl: string | undefined;
+    let ambienceUrl: string | undefined;
     try {
-      const sessionId = await this.getActiveSessionId(campaignId);
       if (sessionId && this.ttsService.isEnabled()) {
         const audio = await this.ttsService.synthesize(sessionId, finalNarrative);
         audioUrl = audio?.url;
@@ -255,12 +274,37 @@ export class AIDMService {
       logger.warn('TTS generation skipped due to error', err);
     }
 
+    try {
+      if (sessionId && this.audioFxService.isEnabled()) {
+        const sceneKey = context.currentLocation || context.currentLocationType || 'scene';
+        const mood = this.deriveMoodHint(playerAction, finalNarrative);
+        const ambiencePrompt = `Cinematic, loopable ambient bed for a D&D scene.
+Location: ${context.currentLocation || 'unknown location'} (${context.currentLocationType || 'unknown type'})
+Description: ${context.currentLocationDescription || 'No description provided.'}
+Mood: ${mood}
+Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
+        const ambience = await this.audioFxService.synthesizeAmbience(sessionId, sceneKey, ambiencePrompt);
+        ambienceUrl = ambience?.url;
+      }
+    } catch (err) {
+      logger.warn('Ambience generation skipped due to error', err);
+    }
+
+    logger.info('=== NARRATIVE SUMMARY ===');
+    logger.info('FINAL_NARRATIVE:', finalNarrative);
+    logger.info('INVENTORY_CHANGES:', JSON.stringify(inventoryChanges));
+    logger.info('COMBAT_START:', combatStartPayload ? 'yes' : 'no');
+    logger.info('ENEMY_INFO_COUNT:', enemyInfoCollected.length);
+    logger.info('AUDIO_URL:', audioUrl || 'none');
+    logger.info('AMBIENCE_URL:', ambienceUrl || 'none');
+
     return {
       narrative: finalNarrative + (toolResults.length > 0 ? '\n\n' + toolResults.join('\n') : ''),
       inventoryChanges,
       combatStart: combatStartPayload,
       enemyInfo: enemyInfoCollected,
       audioUrl,
+      ambienceUrl,
     };
   }
 
@@ -703,6 +747,30 @@ export class AIDMService {
     };
   }
 
+  private deriveMoodHint(action: string, narrative: string): string {
+    const text = `${action}\n${narrative}`.toLowerCase();
+    const moods: Array<{ key: string; label: string }> = [
+      { key: 'battle', label: 'tense, percussive, battle-ready' },
+      { key: 'combat', label: 'tense, percussive, battle-ready' },
+      { key: 'fight', label: 'tense, percussive, battle-ready' },
+      { key: 'danger', label: 'ominous, brooding, low drones' },
+      { key: 'mystic', label: 'mystical, airy pads, sparkles' },
+      { key: 'myster', label: 'mysterious, subtle pulses' },
+      { key: 'village', label: 'warm, rustic, acoustic textures' },
+      { key: 'town', label: 'warm, rustic, acoustic textures' },
+      { key: 'tavern', label: 'cozy, lute-like, gentle rhythm' },
+      { key: 'forest', label: 'natural, flowing, light percussion' },
+      { key: 'dungeon', label: 'dark, echoing, sparse percussion' },
+      { key: 'cave', label: 'dark, echoing, sparse percussion' },
+      { key: 'ruins', label: 'ancient, reverberant, distant choirs' },
+      { key: 'temple', label: 'sacred, choir-like, calm' },
+    ];
+    for (const m of moods) {
+      if (text.includes(m.key)) return m.label;
+    }
+    return 'neutral, exploratory, subtle movement, no vocals';
+  }
+
   /**
    * Extract inventory changes from narrative
    */
@@ -739,6 +807,11 @@ Rules:
 
 Narrative: ${narrative}`;
 
+      console.log('\n\n========== INVENTORY EXTRACTION ==========');
+      console.log('PROMPT:');
+      console.log(extractionPrompt);
+      console.log('==========================================\n');
+
       const extractCfg = this.getTaskConfig('extract');
       const response = await this.llmManager.generateCompletion(
         extractionPrompt,
@@ -750,17 +823,18 @@ Narrative: ${narrative}`;
         extractCfg.provider
       );
 
-      logger.info('Inventory extraction response:', {
-        contentLength: response.content.length,
-        preview: response.content.substring(0, 150),
-        model: response.model,
-        tokensUsed: response.tokensUsed
-      });
+      console.log('\n========== INVENTORY EXTRACTION RESPONSE ==========');
+      console.log('RAW_RESPONSE:');
+      console.log(response.content);
+      console.log('===================================================\n');
 
       // Parse JSON response
       const jsonMatch = response.content.match(/```json\n?([\s\S]*?)\n?```/) || response.content.match(/\{[\s\S]*\}/);
       const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : response.content;
+      console.log('PARSED_JSON:');
+      console.log(jsonStr);
       const changes = JSON.parse(jsonStr.trim());
+      console.log('FINAL_RESULT:', JSON.stringify(changes, null, 2));
 
       const result = {
         itemsAdded: changes.itemsAdded || [],
@@ -843,6 +917,11 @@ Return ONLY valid JSON with this exact structure (empty arrays if nothing found)
 }
 
 Narrative: ${narrative}`;
+        console.log('\n\n========== ENTITY EXTRACTION ==========');
+        console.log('PROMPT:');
+        console.log(extractionPrompt);
+        console.log('========================================\n');
+
         const extractCfg = this.getTaskConfig('extract');
         const response = await this.llmManager.generateCompletion(
           extractionPrompt,
@@ -854,17 +933,18 @@ Narrative: ${narrative}`;
           extractCfg.provider
         );
 
-        logger.info('Entity extraction response:', {
-          contentLength: response.content.length,
-          preview: response.content.substring(0, 150),
-          model: response.model,
-          tokensUsed: response.tokensUsed
-        });
+        console.log('\n========== ENTITY EXTRACTION RESPONSE ==========');
+        console.log('RAW_RESPONSE:');
+        console.log(response.content);
+        console.log('===============================================\n');
 
         // Parse JSON response
         const jsonMatch = response.content.match(/```json\n?([\s\S]*?)\n?```/) || response.content.match(/\{[\s\S]*\}/);
         const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : response.content;
+        console.log('PARSED_JSON:');
+        console.log(jsonStr);
         entities = JSON.parse(jsonStr.trim());
+        console.log('FINAL_RESULT:', JSON.stringify(entities, null, 2));
 
         // Cache entities for a short TTL (10 minutes)
         if (this.redis) {

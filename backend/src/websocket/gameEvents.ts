@@ -128,6 +128,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
         timestamp: new Date(),
         enemyInfo: (result as any).enemyInfo || [],
         audioUrl: (result as any).audioUrl,
+        ambienceUrl: (result as any).ambienceUrl,
       };
 
       logger.info('Sending payload to frontend:', {

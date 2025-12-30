@@ -201,7 +201,7 @@ export class OpenAIProvider implements LLMProvider {
 
         logger.info('Chat Completions response:', {
           contentLength: content.length,
-          contentPreview: content.substring(0, 100),
+          contentPreview: content.substring(0, 1500),
           finishReason: choice.finish_reason,
           model: response.model,
           hasToolCalls: !!toolCalls,
