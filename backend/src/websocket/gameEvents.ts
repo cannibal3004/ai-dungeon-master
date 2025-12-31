@@ -35,14 +35,14 @@ export function setupGameEvents(io: Server, socket: Socket) {
     return room;
   };
 
-  const startCombatInternal = (campaignId: string, players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>, enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number }>) => {
+  const startCombatInternal = (campaignId: string, players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; initiative?: number; level?: number; quantity?: number }>, enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; initiative?: number; level?: number; quantity?: number }>) => {
     const room = ensureCampaignRoom(campaignId);
     const combatants: Combatant[] = [];
     for (const p of players) {
-      combatants.push({ ...p, initiative: rollInitiative(p.dexterity), conditions: [], isPlayer: true });
+      combatants.push({ ...p, initiative: p.initiative ?? rollInitiative(p.dexterity), conditions: [], isPlayer: true });
     }
     for (const e of enemies) {
-      combatants.push({ ...e, initiative: rollInitiative(e.dexterity), conditions: [], isPlayer: false });
+      combatants.push({ ...e, initiative: e.initiative ?? rollInitiative(e.dexterity), conditions: [], isPlayer: false });
     }
     const state = initializeCombat(combatants);
     const map = new Map<string, Combatant>(combatants.map(c => [c.id, c]));
@@ -51,7 +51,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
       campaignId,
       round: state.round,
       currentTurnIndex: state.currentTurnIndex,
-      turnOrder: state.turnOrder.map(c => ({ id: c.id, name: c.name, hp: c.hp, maxHp: c.maxHp, ac: c.ac, initiative: c.initiative, isPlayer: c.isPlayer, level: c.level })),
+      turnOrder: state.turnOrder.map(c => ({ id: c.id, name: c.name, hp: c.hp, maxHp: c.maxHp, ac: c.ac, initiative: c.initiative, isPlayer: c.isPlayer, level: c.level, quantity: c.quantity })),
     });
   };
 

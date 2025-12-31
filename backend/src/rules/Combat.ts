@@ -22,6 +22,7 @@ export interface Combatant {
   conditions: Condition[];
   isPlayer: boolean;
   level?: number;
+  quantity?: number;
 }
 
 export interface AttackResult {

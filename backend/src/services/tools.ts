@@ -245,6 +245,7 @@ export const CHARACTER_TOOLS: Tool[] = [
                 ac: { type: 'number' },
                 dexterity: { type: 'number' },
                 level: { type: 'number', description: 'Optional enemy level for display (not used in calculations)' },
+                quantity: { type: 'number', description: 'Number of this enemy type (e.g., 4 for "Cultist x4"). Defaults to 1 if omitted.' },
               },
               required: ['name','hp','maxHp','ac','dexterity']
             }
@@ -861,10 +862,14 @@ export class ToolExecutor {
    */
   private async startCombat(
     characterId: string,
-    enemies: Array<{ name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number }>
-  ): Promise<{ success: boolean; message: string; players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number }> }> {
+    enemies: Array<{ name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; quantity?: number }>
+  ): Promise<{ success: boolean; message: string; players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; initiative: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; quantity?: number; initiative: number }> }> {
     const character = await this.characterModel.findById(characterId);
     if (!character) throw new Error('Character not found');
+
+    // Roll initiative for player
+    const dexMod = Math.floor(((character.ability_scores?.dexterity ?? 10) - 10) / 2);
+    const playerInitiative = Math.floor(Math.random() * 20) + 1 + dexMod;
 
     const player = {
       id: character.id,
@@ -874,12 +879,21 @@ export class ToolExecutor {
       ac: character.armor_class ?? 12,
       dexterity: character.ability_scores?.dexterity ?? 10,
       level: character.level ?? undefined,
+      initiative: playerInitiative,
     };
 
-    const enemiesWithIds = enemies.map(e => ({
-      id: `enemy:${Math.random().toString(36).slice(2)}`,
-      ...e,
-    }));
+    const enemiesWithIds = enemies.map(e => {
+      // Roll initiative for each enemy
+      const enemyDexMod = Math.floor((e.dexterity - 10) / 2);
+      const enemyInitiative = Math.floor(Math.random() * 20) + 1 + enemyDexMod;
+      
+      return {
+        id: `enemy:${Math.random().toString(36).slice(2)}`,
+        ...e,
+        quantity: e.quantity ?? 1,
+        initiative: enemyInitiative,
+      };
+    });
 
     return {
       success: true,

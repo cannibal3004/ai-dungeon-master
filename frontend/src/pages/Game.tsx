@@ -488,6 +488,14 @@ export default function Game() {
   const ttsEnabledRef = useRef<boolean>(false);
   const ambienceOnRef = useRef<boolean>(true);
 
+  const extractText = (node: any): string => {
+    if (node === null || node === undefined) return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (node.props && node.props.children) return extractText(node.props.children);
+    return '';
+  };
+
   const unlockAudio = () => {
     if (audioUnlocked) return;
     try {
@@ -1239,9 +1247,7 @@ export default function Game() {
                           // Helper function to extract text from children
                           // Style markdown elements to match our theme
                           p: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <p style={{ margin: '0.5rem 0' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1249,9 +1255,7 @@ export default function Game() {
                             );
                           },
                           strong: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <strong style={{ color: '#ffd700', fontWeight: 'bold' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1259,9 +1263,7 @@ export default function Game() {
                             );
                           },
                           em: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <em style={{ color: '#87ceeb', fontStyle: 'italic' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1272,9 +1274,7 @@ export default function Game() {
                           ul: ({node, ...props}) => <ul style={{ marginLeft: '1.5rem', marginTop: '0.5rem', marginBottom: '0.5rem' }} {...props} />,
                           ol: ({node, ...props}) => <ol style={{ marginLeft: '1.5rem', marginTop: '0.5rem', marginBottom: '0.5rem' }} {...props} />,
                           li: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <li style={{ marginBottom: '0.25rem' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1283,9 +1283,7 @@ export default function Game() {
                           },
                           blockquote: ({node, ...props}) => <blockquote style={{ borderLeft: '3px solid #667eea', paddingLeft: '1rem', marginLeft: '0', marginRight: '0', color: '#b0b0b0', fontStyle: 'italic' }} {...props} />,
                           h1: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem', marginBottom: '0.5rem', color: '#ffd700' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1293,9 +1291,7 @@ export default function Game() {
                             );
                           },
                           h2: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginTop: '0.5rem', marginBottom: '0.5rem', color: '#ffd700' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
@@ -1303,9 +1299,7 @@ export default function Game() {
                             );
                           },
                           h3: ({node, children, ...props}) => {
-                            const childText = Array.isArray(children) 
-                              ? children.map(c => typeof c === 'string' ? c : '').join('') 
-                              : typeof children === 'string' ? children : '';
+                            const childText = extractText(children);
                             return (
                               <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginTop: '0.5rem', marginBottom: '0.5rem', color: '#ffd700' }} {...props}>
                                 {childText ? <HighlightedText text={childText} entities={worldEntities} /> : children}
