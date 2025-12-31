@@ -40,7 +40,7 @@ export class TTSService {
     };
 
     // Replace dice notation (e.g., "1d8" → "one d eight", "2d6" → "two d six")
-    return text.replace(/(\d+)d(\d+)/gi, (match, count, sides) => {
+    return text.replace(/(\d+)d(\d+)/gi, (_match, count, sides) => {
       const countNum = parseInt(count, 10);
       const sidesNum = parseInt(sides, 10);
       const countWord = numberWords[countNum] || count;
