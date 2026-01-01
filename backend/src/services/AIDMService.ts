@@ -167,7 +167,7 @@ export class AIDMService {
         logger.info(`  Executing: ${toolCall.function.name} with args:`, toolCall.function.arguments);
         const result = await this.toolExecutor.executeTool(toolCall, characterId, campaignId);
         const parsedResult = JSON.parse(result.content);
-        logger.info(`  Result:`, JSON.stringify(parsedResult));
+        logger.info(`  Result:`, parsedResult);
         
         // Add tool result to messages for second LLM call
         toolMessages.push({
@@ -252,7 +252,6 @@ export class AIDMService {
 
     // Store in chat history
     await this.storeChatMessage(campaignId, 'user', playerAction, userId);
-    await this.storeChatMessage(campaignId, 'assistant', finalNarrative);
 
     // Update context with this event
     await this.addRecentEvent(campaignId, `Player: ${playerAction}\nDM: ${finalNarrative}`);
@@ -291,12 +290,14 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     }
 
     logger.info('=== NARRATIVE SUMMARY ===');
-    logger.info('FINAL_NARRATIVE:', finalNarrative);
-    logger.info('INVENTORY_CHANGES:', JSON.stringify(inventoryChanges));
-    logger.info('COMBAT_START:', combatStartPayload ? 'yes' : 'no');
-    logger.info('ENEMY_INFO_COUNT:', enemyInfoCollected.length);
-    logger.info('AUDIO_URL:', audioUrl || 'none');
-    logger.info('AMBIENCE_URL:', ambienceUrl || 'none');
+    logger.info('FINAL_NARRATIVE', { narrative: finalNarrative });
+    logger.info('INVENTORY_CHANGES', inventoryChanges);
+    logger.info('COMBAT_START', { combatStart: combatStartPayload ? 'yes' : 'no' });
+    logger.info('ENEMY_INFO_COUNT', { count: enemyInfoCollected.length });
+    logger.info('AUDIO_URL', { url: audioUrl || 'none' });
+    logger.info('AMBIENCE_URL', { url: ambienceUrl || 'none' });
+
+    await this.storeChatMessage(campaignId, 'assistant', finalNarrative, undefined, { audioUrl });
 
     return {
       narrative: finalNarrative + (toolResults.length > 0 ? '\n\n' + toolResults.join('\n') : ''),
@@ -363,8 +364,8 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     );
 
     // Store in chat history with NPC name
-    await this.storeChatMessage(campaignId, 'user', playerMessage, userId, npc.name);
-    await this.storeChatMessage(campaignId, 'assistant', response.content, undefined, npc.name);
+    await this.storeChatMessage(campaignId, 'user', playerMessage, userId, { speakerName: npc.name });
+    await this.storeChatMessage(campaignId, 'assistant', response.content, undefined, { speakerName: npc.name });
 
     return response.content;
   }
@@ -613,7 +614,57 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
         inventory: activeCharacterInventory,
         gold: activeCharacterMoney
       } : undefined,
+      combatState: await this.getCombatState(campaignId),
     };
+  }
+
+  /**
+   * Get current combat state if active
+   */
+  private async getCombatState(campaignId: string): Promise<DMContext['combatState'] | undefined> {
+    try {
+      // Get the latest active session (sessions table doesn't have a state column)
+      const sessionRes = await this.pool.query(
+        'SELECT id FROM sessions WHERE campaign_id = $1 ORDER BY started_at DESC LIMIT 1',
+        [campaignId]
+      );
+      
+      if (sessionRes.rows.length === 0) {
+        return undefined;
+      }
+      
+      const sessionId = sessionRes.rows[0].id;
+      const combatKey = `combat:${sessionId}`;
+      
+      // Try to get from Redis
+      if (!this.redis) {
+        return undefined;
+      }
+
+      const cached = await this.redis.get(combatKey);
+      if (!cached) {
+        return undefined;
+      }
+
+      const combatData = JSON.parse(cached);
+      
+      return {
+        isActive: true,
+        round: combatData.round || 1,
+        currentTurnIndex: combatData.currentTurnIndex || 0,
+        turnOrder: (combatData.turnOrder || []).map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          type: c.type as 'player' | 'enemy',
+          hp: c.hp,
+          maxHp: c.maxHp,
+          initiative: c.initiative || 0,
+        })),
+      };
+    } catch (err) {
+      logger.warn('Failed to get combat state', err);
+      return undefined;
+    }
   }
 
   /**
@@ -624,7 +675,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     role: 'user' | 'assistant' | 'system',
     content: string,
     userId?: string,
-    speakerName?: string
+    metadata?: { speakerName?: string; audioUrl?: string }
   ): Promise<void> {
     const sessionId = await this.getActiveSessionId(campaignId);
     if (!sessionId) {
@@ -655,7 +706,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
         null,
         content,
         'narrative',
-        speakerName ? JSON.stringify({ speakerName }) : '{}'
+        metadata ? JSON.stringify(metadata) : '{}'
       ]
     );
   }
@@ -680,6 +731,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
       role: row.sender === 'dm' ? 'assistant' : row.sender === 'player' ? 'user' : 'system',
       content: row.content,
       name: row.metadata?.speakerName || undefined,
+      audioUrl: row.metadata?.audioUrl || undefined,
     }));
   }
 

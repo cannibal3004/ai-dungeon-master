@@ -80,16 +80,16 @@ export class WorldEntityModel {
         WHERE campaign_id = $1 AND id = $6
         RETURNING *
       `;
-      const result = await this.db.query(updateQuery, [campaignId, name, type, description, canonical, entity.id]);
+      const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, canonical, entity.id]);
       return result.rows[0];
     } else {
       // Insert new
       const insertQuery = `
         INSERT INTO world_locations (campaign_id, name, type, description, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
-      const result = await this.db.query(insertQuery, [campaignId, name, type, description, { canonical_name: canonical }]);
+      const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, JSON.stringify({ canonical_name: canonical })]);
       return result.rows[0];
     }
   }
@@ -163,10 +163,10 @@ export class WorldEntityModel {
         campaignId, 
         entity.id, 
         name, 
-        role, 
-        description, 
-        personality, 
-        locationId,
+        role || null, 
+        description || null, 
+        personality || null, 
+        locationId || null,
         JSON.stringify(aliases),
         canonical
       ]);
@@ -176,10 +176,10 @@ export class WorldEntityModel {
       const metadata = formerName ? { aliases: [formerName], canonical_name: canonical } : { canonical_name: canonical };
       const insertQuery = `
         INSERT INTO world_npcs (campaign_id, name, role, description, personality, location_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
-      const result = await this.db.query(insertQuery, [campaignId, name, role, description, personality, locationId, metadata]);
+      const result = await this.db.query(insertQuery, [campaignId, name, role || null, description || null, personality || null, locationId || null, JSON.stringify(metadata)]);
       return result.rows[0];
     }
   }
@@ -216,16 +216,16 @@ export class WorldEntityModel {
         WHERE campaign_id = $1 AND id = $7
         RETURNING *
       `;
-      const result = await this.db.query(updateQuery, [campaignId, name, type, description, locationId, canonical, entity.id]);
+      const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, locationId || null, canonical, entity.id]);
       return result.rows[0];
     } else {
       // Insert new
       const insertQuery = `
         INSERT INTO world_shops (campaign_id, name, type, description, location_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
-      const result = await this.db.query(insertQuery, [campaignId, name, type, description, locationId, { canonical_name: canonical }]);
+      const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, locationId || null, JSON.stringify({ canonical_name: canonical })]);
       return result.rows[0];
     }
   }
@@ -263,16 +263,16 @@ export class WorldEntityModel {
         WHERE campaign_id = $1 AND id = $8
         RETURNING *
       `;
-      const result = await this.db.query(updateQuery, [campaignId, name, type, description, locationId, shopId, canonical, entity.id]);
+      const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, locationId || null, shopId || null, canonical, entity.id]);
       return result.rows[0];
     } else {
       // Insert new
       const insertQuery = `
         INSERT INTO world_items (campaign_id, name, type, description, location_id, shop_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
-      const result = await this.db.query(insertQuery, [campaignId, name, type, description, locationId, shopId, { canonical_name: canonical }]);
+      const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, locationId || null, shopId || null, JSON.stringify({ canonical_name: canonical })]);
       return result.rows[0];
     }
   }

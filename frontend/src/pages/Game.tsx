@@ -120,6 +120,11 @@ export default function Game() {
   const [combatState, setCombatState] = useState<any | null>(null);
   const [enemyInfo, setEnemyInfo] = useState<any[]>([]);
   const [expandedEnemies, setExpandedEnemies] = useState<Record<number, boolean>>({});
+  const [showSaveMenu, setShowSaveMenu] = useState(false);
+  const [saveStates, setSaveStates] = useState<any[]>([]);
+  const [saveName, setSaveName] = useState('');
+  const [loadingSave, setLoadingSave] = useState(false);
+  const saveMenuRef = useRef<HTMLDivElement>(null);
 
   // Apply inventory changes from backend LLM extraction
   const applyInventoryChanges = async (changes: {
@@ -206,6 +211,7 @@ export default function Game() {
     fetchCharacter();
     fetchWorldEntities();
     fetchQuests();
+    fetchSaveStates();
     initializeSocket();
     
     return () => {
@@ -256,6 +262,7 @@ export default function Game() {
             type: msg.sender === 'dm' ? 'narrative' : msg.sender === 'player' ? 'action' : 'system',
             content: msg.content,
             timestamp: new Date(msg.created_at),
+            audioUrl: msg.metadata?.audioUrl || msg.audioUrl || undefined,
           }));
           setMessages(converted);
           console.log('Loaded', converted.length, 'messages from backend');
@@ -496,6 +503,71 @@ export default function Game() {
     return '';
   };
 
+  const fetchSaveStates = async () => {
+    if (!campaignId) return;
+    try {
+      const res = await apiClient.get(`/sessions/campaign/${campaignId}/saves`);
+      setSaveStates(res.data?.data?.saveStates || []);
+    } catch (err) {
+      console.warn('Failed to fetch save states', err);
+    }
+  };
+
+  const createSaveState = async () => {
+    if (!sessionId || !saveName.trim()) return;
+    setLoadingSave(true);
+    try {
+      await apiClient.post('/sessions/saves', {
+        sessionId,
+        saveName,
+        stateData: {
+          character: character,
+          worldEntities: worldEntities,
+          quests: activeQuests
+        },
+        turnNumber: combatState?.round || 0,
+      });
+      setSaveName('');
+      await fetchSaveStates();
+      addMessage('system', `✓ Save created: "${saveName}"`);
+      setShowSaveMenu(false);
+    } catch (err) {
+      console.warn('Failed to create save', err);
+      addMessage('system', '✗ Failed to save');
+    } finally {
+      setLoadingSave(false);
+    }
+  };
+
+  const loadSaveState = async (saveId: string) => {
+    setLoadingSave(true);
+    try {
+      const res = await apiClient.get(`/sessions/saves/${saveId}`);
+      const save = res.data?.data?.saveState;
+      addMessage('system', `✓ Loaded save: "${save?.name}" (Turn ${save?.turn_number})`);
+      // TODO: Restore character, world entities, and quests from save.game_state
+      // For now, just refresh the current data
+      await Promise.all([fetchCharacter(), fetchWorldEntities(), fetchQuests()]);
+      setShowSaveMenu(false);
+    } catch (err) {
+      console.warn('Failed to load save', err);
+      addMessage('system', '✗ Failed to load save');
+    } finally {
+      setLoadingSave(false);
+    }
+  };
+
+  const deleteSaveState = async (saveId: string) => {
+    if (!confirm('Delete this save?')) return;
+    try {
+      await apiClient.delete(`/sessions/saves/${saveId}`);
+      fetchSaveStates();
+      addMessage('system', '✓ Save deleted');
+    } catch (err) {
+      console.warn('Failed to delete save', err);
+    }
+  };
+
   const unlockAudio = () => {
     if (audioUnlocked) return;
     try {
@@ -729,11 +801,15 @@ export default function Game() {
       if (showAmbienceMenu && ambienceMenuRef.current && target && !ambienceMenuRef.current.contains(target)) {
         setShowAmbienceMenu(false);
       }
+      if (showSaveMenu && saveMenuRef.current && target && !saveMenuRef.current.contains(target)) {
+        setShowSaveMenu(false);
+      }
     };
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (showNarrationMenu) setShowNarrationMenu(false);
         if (showAmbienceMenu) setShowAmbienceMenu(false);
+        if (showSaveMenu) setShowSaveMenu(false);
       }
     };
     document.addEventListener('pointerdown', handleOutside);
@@ -742,7 +818,7 @@ export default function Game() {
       document.removeEventListener('pointerdown', handleOutside);
       document.removeEventListener('keydown', handleKey);
     };
-  }, [showNarrationMenu, showAmbienceMenu]);
+  }, [showNarrationMenu, showAmbienceMenu, showSaveMenu]);
 
 
   const scrollToBottom = () => {
@@ -1062,6 +1138,163 @@ export default function Game() {
                     >Pause</button>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Save states dropdown */}
+          <div style={{ position: 'relative' }} ref={saveMenuRef}>
+            <button
+              aria-label="Save/Load game"
+              title="Save/Load game"
+              onClick={() => {
+                setShowSaveMenu((v) => !v);
+                setShowNarrationMenu(false);
+                setShowAmbienceMenu(false);
+              }}
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.22)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '1.15rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.25)'
+              }}
+            >💾</button>
+            {showSaveMenu && (
+              <div style={{
+                position: 'absolute',
+                right: 0,
+                marginTop: '0.65rem',
+                minWidth: '320px',
+                maxWidth: '420px',
+                background: '#0f172a',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: '10px',
+                boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
+                padding: '0.9rem',
+                zIndex: 30,
+                maxHeight: '480px',
+                overflowY: 'auto'
+              }}>
+                <div style={{ fontWeight: 700, marginBottom: '0.75rem' }}>Save/Load Game</div>
+                
+                {/* Create new save */}
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <input
+                      type="text"
+                      placeholder="Save name..."
+                      value={saveName}
+                      onChange={(e) => setSaveName(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '0.5rem 0.65rem',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(255,255,255,0.22)',
+                        background: 'rgba(255,255,255,0.08)',
+                        color: 'white',
+                        fontSize: '0.9rem'
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !loadingSave) createSaveState();
+                      }}
+                    />
+                    <button
+                      onClick={createSaveState}
+                      disabled={!saveName.trim() || loadingSave}
+                      style={{
+                        padding: '0.5rem 0.8rem',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(255,255,255,0.22)',
+                        background: saveName.trim() && !loadingSave ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255,255,255,0.08)',
+                        color: 'white',
+                        cursor: saveName.trim() && !loadingSave ? 'pointer' : 'not-allowed',
+                        fontSize: '0.9rem',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {loadingSave ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Existing saves list */}
+                <div style={{ 
+                  maxHeight: '300px',
+                  overflowY: 'auto',
+                  borderTop: '1px solid rgba(255,255,255,0.1)',
+                  paddingTop: '0.75rem'
+                }}>
+                  {saveStates.length === 0 ? (
+                    <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.9rem', padding: '0.5rem' }}>
+                      No saves yet
+                    </div>
+                  ) : (
+                    saveStates.map((save) => (
+                      <div
+                        key={save.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          padding: '0.65rem',
+                          marginBottom: '0.5rem',
+                          background: 'rgba(255,255,255,0.08)',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255,255,255,0.12)'
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: '0.95rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {save.name}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.6)' }}>
+                            {new Date(save.created_at).toLocaleString()}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => loadSaveState(save.id)}
+                          disabled={loadingSave}
+                          style={{
+                            padding: '0.4rem 0.6rem',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.22)',
+                            background: 'rgba(59, 130, 246, 0.2)',
+                            color: '#93c5fd',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          Load
+                        </button>
+                        <button
+                          onClick={() => deleteSaveState(save.id)}
+                          disabled={loadingSave}
+                          style={{
+                            padding: '0.4rem 0.6rem',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.22)',
+                            background: 'rgba(239, 68, 68, 0.15)',
+                            color: '#fca5a5',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem'
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
           </div>

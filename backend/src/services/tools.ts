@@ -340,6 +340,35 @@ export const CHARACTER_TOOLS: Tool[] = [
         required: []
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_turn_order',
+      description: 'Get the current combat turn order and whose turn it is. Use this to understand the combat sequence before taking actions.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'end_current_turn',
+      description: 'End the current combatant\'s turn and advance to the next combatant in turn order. Use this after the current combatant has taken their action.',
+      parameters: {
+        type: 'object',
+        properties: {
+          combatantId: {
+            type: 'string',
+            description: 'ID of the combatant whose turn is ending (must match the current turn)'
+          }
+        },
+        required: ['combatantId']
+      }
+    }
   }
 ];
 
@@ -425,6 +454,14 @@ export class ToolExecutor {
 
         case 'upsert_world_entities':
           result = await this.upsertWorldEntities(campaignId!, args);
+          break;
+
+        case 'get_turn_order':
+          result = await this.getTurnOrder(campaignId!);
+          break;
+
+        case 'end_current_turn':
+          result = await this.endCurrentTurn(campaignId!, args.combatantId);
           break;
 
         default:
@@ -937,5 +974,148 @@ export class ToolExecutor {
         quantity: item.quantity || 1,
       };
     });
+  }
+
+  /**
+   * Get the current combat turn order and whose turn it is
+   */
+  private async getTurnOrder(campaignId: string): Promise<any> {
+    const pool = (await import('../utils/database')).getDatabase();
+    
+    // Get active session
+    const sessionRes = await pool.query(
+      'SELECT id FROM sessions WHERE campaign_id = $1 AND state = $2 LIMIT 1',
+      [campaignId, 'active']
+    );
+    
+    if (sessionRes.rows.length === 0) {
+      return { error: 'No active combat session' };
+    }
+    
+    const sessionId = sessionRes.rows[0].id;
+    
+    // Get combat state from Redis if available
+    const redis = (await import('../utils/redis')).getRedis();
+    const combatKey = `combat:${sessionId}`;
+    
+    let combatState: any = null;
+    if (redis) {
+      try {
+        const cached = await redis.get(combatKey);
+        if (cached) {
+          combatState = JSON.parse(cached);
+        }
+      } catch (err) {
+        logger.warn('Failed to get combat state from Redis', err);
+      }
+    }
+    
+    if (!combatState || !combatState.turnOrder) {
+      return { error: 'No active combat' };
+    }
+
+    const currentTurnIndex = combatState.currentTurnIndex || 0;
+    const turnOrder = combatState.turnOrder || [];
+    const currentCombatant = turnOrder[currentTurnIndex];
+
+    return {
+      success: true,
+      round: combatState.round || 1,
+      current_turn_index: currentTurnIndex,
+      current_turn: currentTurnIndex + 1,
+      total_combatants: turnOrder.length,
+      current_combatant: currentCombatant ? {
+        id: currentCombatant.id,
+        name: currentCombatant.name,
+        type: currentCombatant.type, // 'player' or 'enemy'
+        hp: currentCombatant.hp,
+        max_hp: currentCombatant.maxHp
+      } : null,
+      turn_order: turnOrder.map((c: any, idx: number) => ({
+        order: idx + 1,
+        name: c.name,
+        type: c.type,
+        hp: c.hp,
+        max_hp: c.maxHp,
+        is_current: idx === currentTurnIndex
+      }))
+    };
+  }
+
+  /**
+   * End the current combatant's turn and advance to the next
+   */
+  private async endCurrentTurn(campaignId: string, combatantId: string): Promise<any> {
+    const pool = (await import('../utils/database')).getDatabase();
+    
+    // Get active session
+    const sessionRes = await pool.query(
+      'SELECT id FROM sessions WHERE campaign_id = $1 AND state = $2 LIMIT 1',
+      [campaignId, 'active']
+    );
+    
+    if (sessionRes.rows.length === 0) {
+      return { error: 'No active combat session' };
+    }
+    
+    const sessionId = sessionRes.rows[0].id;
+    
+    // Get combat state from Redis
+    const redis = (await import('../utils/redis')).getRedis();
+    const combatKey = `combat:${sessionId}`;
+    
+    if (!redis) {
+      return { error: 'Combat system not available' };
+    }
+
+    try {
+      const cached = await redis.get(combatKey);
+      if (!cached) {
+        return { error: 'No active combat' };
+      }
+      
+      const combatState = JSON.parse(cached);
+      const turnOrder = combatState.turnOrder || [];
+      const currentTurnIndex = combatState.currentTurnIndex || 0;
+      const currentCombatant = turnOrder[currentTurnIndex];
+
+      // Verify the combatant ID matches
+      if (currentCombatant.id !== combatantId) {
+        return { 
+          error: `It is ${currentCombatant.name}'s turn, not the specified combatant. Use get_turn_order to check whose turn it is.`,
+          current_turn: currentCombatant.name
+        };
+      }
+
+      // Advance to next turn
+      const nextTurnIndex = (currentTurnIndex + 1) % turnOrder.length;
+      combatState.currentTurnIndex = nextTurnIndex;
+
+      // If we wrapped around to turn 0, increment the round
+      if (nextTurnIndex === 0) {
+        combatState.round = (combatState.round || 1) + 1;
+      }
+
+      // Save updated combat state
+      await redis.set(combatKey, JSON.stringify(combatState), 'EX', 3600);
+
+      const nextCombatant = turnOrder[nextTurnIndex];
+
+      return {
+        success: true,
+        message: `${currentCombatant.name}'s turn ended. Now ${nextCombatant.name}'s turn.`,
+        round: combatState.round,
+        current_combatant: {
+          id: nextCombatant.id,
+          name: nextCombatant.name,
+          type: nextCombatant.type,
+          hp: nextCombatant.hp,
+          max_hp: nextCombatant.maxHp
+        }
+      };
+    } catch (err) {
+      logger.error('Failed to advance turn', err);
+      return { error: 'Failed to advance turn' };
+    }
   }
 }

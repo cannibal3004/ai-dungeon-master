@@ -165,22 +165,32 @@ export class SessionService {
     turnNumber = 0,
     slotNumber?: number
   ): Promise<SaveState> {
+    // Get campaign_id from session
+    const sessionQuery = 'SELECT campaign_id FROM sessions WHERE id = $1';
+    const sessionResult = await this.pool.query(sessionQuery, [sessionId]);
+    
+    if (sessionResult.rows.length === 0) {
+      throw new AppError(404, 'Session not found');
+    }
+    
+    const campaignId = sessionResult.rows[0].campaign_id;
     const slot = slotNumber ?? (await this.getNextSlotNumber(sessionId));
 
     const query = `
-      INSERT INTO save_states (session_id, name, slot_number, turn_number, game_state, character_states, world_state)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO save_states (campaign_id, session_id, name, slot_number, turn_number, game_state, character_states, world_state, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
       RETURNING *
     `;
 
     const result = await this.pool.query(query, [
+      campaignId,
       sessionId,
       saveName,
       slot,
       turnNumber,
       JSON.stringify(stateData),
-      '[]',
-      '{}',
+      JSON.stringify(stateData?.character || {}),
+      JSON.stringify(stateData?.worldEntities || {}),
     ]);
 
     logger.info(`Created save state "${saveName}" for session ${sessionId}`);

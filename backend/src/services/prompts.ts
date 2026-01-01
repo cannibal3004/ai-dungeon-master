@@ -71,6 +71,19 @@ export interface DMContext {
     inventory: string[];
     gold: number;
   };
+  combatState?: {
+    isActive: boolean;
+    round: number;
+    currentTurnIndex: number;
+    turnOrder: Array<{
+      id: string;
+      name: string;
+      type: 'player' | 'enemy';
+      hp: number;
+      maxHp: number;
+      initiative: number;
+    }>;
+  };
 }
 
 export interface EncounterRequest {
@@ -413,12 +426,42 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
 
   // Add active character's inventory
   if (context.activeCharacter) {
-    const inventoryList = context.activeCharacter.inventory.length > 0 
-      ? context.activeCharacter.inventory.join(', ')
+    const inventoryList = Array.isArray(context.activeCharacter.inventory) && context.activeCharacter.inventory.length > 0
+      ? context.activeCharacter.inventory.map((item: any) => {
+          if (typeof item === 'string') return item;
+          const qty = item.quantity && item.quantity !== 1 ? ` (x${item.quantity})` : '';
+          return `${item.name ?? 'Unknown item'}${qty}`;
+        }).join(', ')
       : 'empty';
     messages.push({
       role: 'system',
       content: `${context.activeCharacter.name}'s current inventory: ${inventoryList}\nGold: ${context.activeCharacter.gold} gp\n\nIMPORTANT: When the player asks about their inventory, list these exact items. Track changes accurately.`,
+    });
+  }
+
+  // Add combat state if active
+  if (context.combatState?.isActive && context.combatState.turnOrder && context.combatState.turnOrder.length > 0) {
+    const currentTurnIndex = context.combatState.currentTurnIndex || 0;
+    const currentCombatant = context.combatState.turnOrder[currentTurnIndex];
+    
+    const turnOrderStr = context.combatState.turnOrder
+      .map((c, idx) => {
+        const current = idx === currentTurnIndex ? ' ← CURRENT TURN' : '';
+        const hpBar = `${c.hp}/${c.maxHp} HP`;
+        return `${idx + 1}. ${c.name} (${c.type})${current} - ${hpBar}`;
+      })
+      .join('\n');
+
+    messages.push({
+      role: 'system',
+      content: `⚔️ ACTIVE COMBAT - Round ${context.combatState.round}
+
+Turn Order:
+${turnOrderStr}
+
+CRITICAL: It is ${currentCombatant.name}'s turn right now. Do not skip turns or give multiple consecutive turns to the same combatant.
+When ${currentCombatant.name}'s action is complete, use the end_current_turn tool to advance to the next combatant.
+Use get_turn_order tool to verify whose turn it is before any combat action.`,
     });
   }
 

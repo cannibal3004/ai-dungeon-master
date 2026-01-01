@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS save_states (
     name VARCHAR(255),
     description TEXT,
     state_data JSONB,
+    slot_number INTEGER,
+    turn_number INTEGER DEFAULT 0,
+    game_state JSONB,
+    character_states JSONB DEFAULT '[]'::jsonb,
+    world_state JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
