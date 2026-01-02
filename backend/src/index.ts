@@ -20,8 +20,18 @@ import sessionRoutes from './routes/session.routes';
 import dmRoutes from './routes/dm.routes';
 import characterAbilitiesRoutes from './routes/characterAbilities.routes';
 
-// Load .env from project root to ensure backend sees root env
-dotenv.config({ path: path.resolve(process.cwd(), '..', '.env') });
+// Load .env from project root (works whether started in repo root, backend/, or Docker)
+const envCandidates = [
+  path.resolve(__dirname, '..', '..', '.env'), // ../.env when running from dist/
+  path.resolve(process.cwd(), '.env'),        // current working directory
+  path.resolve(process.cwd(), '..', '.env'),  // parent of cwd (previous behavior)
+];
+for (const p of envCandidates) {
+  if (fs.existsSync(p)) {
+    dotenv.config({ path: p });
+    break;
+  }
+}
 
 const app = express();
 const server = http.createServer(app);

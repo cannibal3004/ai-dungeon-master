@@ -42,7 +42,10 @@ async function processNarrativeEnhancements(
 
   try {
     // Generate TTS
-    logger.info('Starting TTS generation for narrative');
+    logger.info('Starting TTS generation for narrative', {
+      sessionId,
+      ttsEnabled: getAIDMService()['ttsService'].isEnabled(),
+    });
     
     if (sessionId && getAIDMService()['ttsService'].isEnabled()) {
       try {

@@ -24,6 +24,13 @@ export class TTSService {
     this.elevenKey = process.env.ELEVENLABS_API_KEY;
     this.elevenVoiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // Default voice (Rachel)
     this.httpUrl = process.env.TTS_HTTP_URL;
+
+    logger.info('[TTS] Init', {
+      enabled: this.enabled,
+      provider: this.provider,
+      httpUrlPresent: !!this.httpUrl,
+      elevenKeyPresent: !!this.elevenKey,
+    });
   }
 
   isEnabled(): boolean { return this.enabled && !!this.provider; }
