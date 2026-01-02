@@ -4,6 +4,8 @@ import type { DiceType, DiceRoll } from '../utils/dice';
 
 interface DiceRollerProps {
   onRoll?: (rollText: string) => void;
+  forceExpanded?: boolean;
+  hideHeader?: boolean;
 }
 
 interface RollHistory {
@@ -12,14 +14,23 @@ interface RollHistory {
   timestamp: Date;
 }
 
-export const DiceRoller: React.FC<DiceRollerProps> = ({ onRoll }) => {
+export const DiceRoller: React.FC<DiceRollerProps> = ({ onRoll, forceExpanded, hideHeader }) => {
   const [count, setCount] = useState(1);
   const [modifier, setModifier] = useState(0);
   const [lastRoll, setLastRoll] = useState<DiceRoll | null>(null);
   const [history, setHistory] = useState<RollHistory[]>([]);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(forceExpanded ?? false);
+
+  const expanded = forceExpanded ?? isExpanded;
 
   const diceTypes: DiceType[] = ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'];
+
+  // Keep local expansion state in sync when the caller forces it
+  React.useEffect(() => {
+    if (forceExpanded !== undefined) {
+      setIsExpanded(forceExpanded);
+    }
+  }, [forceExpanded]);
 
   const handleRoll = (dice: DiceType) => {
     const roll = rollDice(dice, count, modifier);
@@ -59,13 +70,22 @@ export const DiceRoller: React.FC<DiceRollerProps> = ({ onRoll }) => {
 
   return (
     <div className="dice-roller">
-      <div className="dice-roller-header">
-        <h3 onClick={() => setIsExpanded(!isExpanded)} style={{ cursor: 'pointer' }}>
-          🎲 Dice Roller {isExpanded ? '▼' : '▶'}
-        </h3>
-      </div>
+      {!hideHeader && (
+        <div className="dice-roller-header">
+          <h3
+            onClick={() => {
+              if (forceExpanded === undefined) {
+                setIsExpanded(!isExpanded);
+              }
+            }}
+            style={{ cursor: forceExpanded === undefined ? 'pointer' : 'default' }}
+          >
+            🎲 Dice Roller {expanded ? '▼' : '▶'}
+          </h3>
+        </div>
+      )}
 
-      {isExpanded && (
+      {expanded && (
         <>
           {/* Last Roll Display */}
           {lastRoll && (

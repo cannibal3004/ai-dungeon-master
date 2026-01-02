@@ -56,7 +56,7 @@ export default function Campaigns() {
     }
   };
 
-  const selectCampaign = (campaignId: number) => {
+  const selectCampaign = (campaignId: string) => {
     navigate(`/campaigns/${campaignId}/characters`);
   };
 

@@ -23,6 +23,78 @@ function getCharacterModel(): CharacterModel {
   return characterModel;
 }
 
+/**
+ * Process TTS and ambience generation asynchronously after sending initial narrative
+ * Sends updates via socket.io when enhancements complete
+ */
+async function processNarrativeEnhancements(
+  socket: Socket,
+  campaignId: string,
+  sessionId: string | null,
+  narrative: string,
+  room: string,
+  result: any
+) {
+  if (!socket) {
+    logger.warn('No socket provided for narrative enhancements');
+    return;
+  }
+
+  try {
+    // Generate TTS
+    logger.info('Starting TTS generation for narrative');
+    
+    if (sessionId && getAIDMService()['ttsService'].isEnabled()) {
+      try {
+        const audio = await getAIDMService()['ttsService'].synthesize(sessionId, narrative);
+        if (audio?.url) {
+          logger.info('TTS completed, sending audio URL');
+          socket.emit('game:audio-ready', {
+            campaignId,
+            audioUrl: audio.url,
+            narrativeId: result.narrative?.substring(0, 50), // For matching
+          });
+          socket.to(room).emit('game:audio-ready', {
+            campaignId,
+            audioUrl: audio.url,
+            narrativeId: result.narrative?.substring(0, 50),
+          });
+        }
+      } catch (err) {
+        logger.warn('TTS generation failed:', err);
+      }
+    }
+
+    // Generate ambience (if available)
+    if (sessionId && getAIDMService()['audioFxService'].isEnabled()) {
+      try {
+        const sceneKey = result.currentLocation || result.currentLocationType || 'scene';
+        const mood = 'epic'; // Simplified: just use a static mood for now
+        const ambiencePrompt = `Cinematic, loopable ambient bed for a D&D scene. Key: ${sceneKey}. Mood: ${mood}.`;
+        
+        const ambience = await getAIDMService()['audioFxService'].synthesizeAmbience(sessionId, sceneKey, ambiencePrompt);
+        if (ambience?.url) {
+          logger.info('Ambience completed, sending ambience URL');
+          socket.emit('game:ambience-ready', {
+            campaignId,
+            ambienceUrl: ambience.url,
+            narrativeId: result.narrative?.substring(0, 50),
+          });
+          socket.to(room).emit('game:ambience-ready', {
+            campaignId,
+            ambienceUrl: ambience.url,
+            narrativeId: result.narrative?.substring(0, 50),
+          });
+        }
+      } catch (err) {
+        logger.warn('Ambience generation failed:', err);
+      }
+    }
+  } catch (err) {
+    logger.error('Error in narrative enhancements:', err);
+  }
+}
+
 export function setupGameEvents(io: Server, socket: Socket) {
   const getUserId = () => (socket as any).userId as string | undefined;
   const ensureCampaignRoom = (campaignId: string) => {
@@ -119,7 +191,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
         inventoryChanges: result.inventoryChanges
       });
 
-      // Broadcast to all players in the campaign
+      // Broadcast initial narrative to all players in the campaign (without audio URLs initially)
       const payload = {
         campaignId: data.campaignId,
         narrative: result.narrative,
@@ -127,11 +199,11 @@ export function setupGameEvents(io: Server, socket: Socket) {
         characterId: data.characterId,
         timestamp: new Date(),
         enemyInfo: (result as any).enemyInfo || [],
-        audioUrl: (result as any).audioUrl,
-        ambienceUrl: (result as any).ambienceUrl,
+        audioUrl: undefined, // Will be sent later when TTS completes
+        ambienceUrl: undefined, // Will be sent later when ambience completes
       };
 
-      logger.info('Sending payload to frontend:', {
+      logger.info('Sending initial narrative to frontend:', {
         narrativeLength: payload.narrative?.length || 0,
         campaignId: payload.campaignId
       });
@@ -167,6 +239,16 @@ export function setupGameEvents(io: Server, socket: Socket) {
       if (result.combatStart) {
         startCombatInternal(data.campaignId, result.combatStart.players, result.combatStart.enemies);
       }
+
+      // Get session ID for TTS/ambience processing
+      const sessionId = await getAIDMService().getSessionId(data.campaignId);
+
+      // Now do TTS and ambience generation asynchronously and send updates when ready
+      // These are fire-and-forget: we don't await, just start the background tasks
+      processNarrativeEnhancements(socket, data.campaignId, sessionId, result.narrative, room, result).catch(err => {
+        logger.error('Error processing narrative enhancements:', err);
+      });
+
     } catch (error) {
       logger.error('Error handling game action:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to process action';

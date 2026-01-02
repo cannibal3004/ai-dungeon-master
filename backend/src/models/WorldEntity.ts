@@ -64,7 +64,7 @@ export class WorldEntityModel {
     // Check if exists (case-insensitive name or canonical match)
     const checkQuery = `
       SELECT * FROM world_locations 
-      WHERE campaign_id = $1 AND (LOWER(name) = LOWER($2) OR metadata->>'canonical_name' = $3)
+      WHERE campaign_id = $1::uuid AND (LOWER(name) = LOWER($2::text) OR metadata->>'canonical_name' = $3::text)
     `;
     const existing = await this.db.query(checkQuery, [campaignId, name, canonical]);
     
@@ -74,10 +74,11 @@ export class WorldEntityModel {
       const updateQuery = `
         UPDATE world_locations
         SET last_mentioned = CURRENT_TIMESTAMP,
-            type = COALESCE($3, type),
-            description = COALESCE($4, description),
-            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $5)
-        WHERE campaign_id = $1 AND id = $6
+            name = COALESCE($2::text, name),
+            type = COALESCE($3::text, type),
+            description = COALESCE($4::text, description),
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $5::text)
+        WHERE campaign_id = $1::uuid AND id = $6::uuid
         RETURNING *
       `;
       const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, canonical, entity.id]);
@@ -86,7 +87,7 @@ export class WorldEntityModel {
       // Insert new
       const insertQuery = `
         INSERT INTO world_locations (campaign_id, name, type, description, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5::jsonb, CURRENT_TIMESTAMP)
+        VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
       const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, JSON.stringify({ canonical_name: canonical })]);
@@ -118,15 +119,15 @@ export class WorldEntityModel {
     // Check if exists by name/alias/canonical or if this is a name reveal
     let checkQuery = `
       SELECT * FROM world_npcs 
-      WHERE campaign_id = $1 AND (
-        LOWER(name) = LOWER($2)
-        OR metadata->>'aliases' ILIKE '%' || $2 || '%'
-        OR metadata->>'canonical_name' = $3
+      WHERE campaign_id = $1::uuid AND (
+        LOWER(name) = LOWER($2::text)
+        OR metadata->>'aliases' ILIKE '%' || $2::text || '%'
+        OR metadata->>'canonical_name' = $3::text
     `;
     const params: any[] = [campaignId, name, canonical];
     
     if (formerName) {
-      checkQuery += ` OR LOWER(name) = LOWER($4)`;
+      checkQuery += ` OR LOWER(name) = LOWER($4::text)`;
       params.push(formerName);
     }
     
@@ -147,16 +148,16 @@ export class WorldEntityModel {
       const updateQuery = `
         UPDATE world_npcs
         SET last_mentioned = CURRENT_TIMESTAMP,
-            name = $3,
-            role = COALESCE($4, role),
-            description = COALESCE($5, description),
-            personality = COALESCE($6, personality),
-            location_id = COALESCE($7, location_id),
+            name = $3::text,
+            role = COALESCE($4::text, role),
+            description = COALESCE($5::text, description),
+            personality = COALESCE($6::text, personality),
+            location_id = COALESCE($7::uuid, location_id),
             metadata = jsonb_set(
-              COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $9),
+              COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $9::text),
               '{aliases}', $8::jsonb
             )
-        WHERE campaign_id = $1 AND id = $2
+        WHERE campaign_id = $1::uuid AND id = $2::uuid
         RETURNING *
       `;
       const result = await this.db.query(updateQuery, [
@@ -176,7 +177,7 @@ export class WorldEntityModel {
       const metadata = formerName ? { aliases: [formerName], canonical_name: canonical } : { canonical_name: canonical };
       const insertQuery = `
         INSERT INTO world_npcs (campaign_id, name, role, description, personality, location_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
+        VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::text, $6::uuid, $7::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
       const result = await this.db.query(insertQuery, [campaignId, name, role || null, description || null, personality || null, locationId || null, JSON.stringify(metadata)]);
@@ -199,7 +200,7 @@ export class WorldEntityModel {
     // Check if exists (case-insensitive name or canonical)
     const checkQuery = `
       SELECT * FROM world_shops 
-      WHERE campaign_id = $1 AND (LOWER(name) = LOWER($2) OR metadata->>'canonical_name' = $3)
+      WHERE campaign_id = $1::uuid AND (LOWER(name) = LOWER($2::text) OR metadata->>'canonical_name' = $3::text)
     `;
     const existing = await this.db.query(checkQuery, [campaignId, name, canonical]);
     
@@ -209,11 +210,12 @@ export class WorldEntityModel {
       const updateQuery = `
         UPDATE world_shops
         SET last_mentioned = CURRENT_TIMESTAMP,
-            type = COALESCE($3, type),
-            description = COALESCE($4, description),
-            location_id = COALESCE($5, location_id),
-            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $6)
-        WHERE campaign_id = $1 AND id = $7
+            name = COALESCE($2::text, name),
+            type = COALESCE($3::text, type),
+            description = COALESCE($4::text, description),
+            location_id = COALESCE($5::uuid, location_id),
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $6::text)
+        WHERE campaign_id = $1::uuid AND id = $7::uuid
         RETURNING *
       `;
       const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, locationId || null, canonical, entity.id]);
@@ -222,7 +224,7 @@ export class WorldEntityModel {
       // Insert new
       const insertQuery = `
         INSERT INTO world_shops (campaign_id, name, type, description, location_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, CURRENT_TIMESTAMP)
+        VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::uuid, $6::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
       const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, locationId || null, JSON.stringify({ canonical_name: canonical })]);
@@ -245,7 +247,7 @@ export class WorldEntityModel {
     // Check if exists (case-insensitive name or canonical)
     const checkQuery = `
       SELECT * FROM world_items 
-      WHERE campaign_id = $1 AND (LOWER(name) = LOWER($2) OR metadata->>'canonical_name' = $3)
+      WHERE campaign_id = $1::uuid AND (LOWER(name) = LOWER($2::text) OR metadata->>'canonical_name' = $3::text)
     `;
     const existing = await this.db.query(checkQuery, [campaignId, name, canonical]);
     
@@ -255,12 +257,13 @@ export class WorldEntityModel {
       const updateQuery = `
         UPDATE world_items
         SET last_mentioned = CURRENT_TIMESTAMP,
-            type = COALESCE($3, type),
-            description = COALESCE($4, description),
-            location_id = COALESCE($5, location_id),
-            shop_id = COALESCE($6, shop_id),
-            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $7)
-        WHERE campaign_id = $1 AND id = $8
+            name = $2::text,
+            type = COALESCE($3::text, type),
+            description = COALESCE($4::text, description),
+            location_id = COALESCE($5::uuid, location_id),
+            shop_id = COALESCE($6::uuid, shop_id),
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('canonical_name', $7::text)
+        WHERE campaign_id = $1::uuid AND id = $8::uuid
         RETURNING *
       `;
       const result = await this.db.query(updateQuery, [campaignId, name, type || null, description || null, locationId || null, shopId || null, canonical, entity.id]);
@@ -269,7 +272,7 @@ export class WorldEntityModel {
       // Insert new
       const insertQuery = `
         INSERT INTO world_items (campaign_id, name, type, description, location_id, shop_id, metadata, last_mentioned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CURRENT_TIMESTAMP)
+        VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::uuid, $6::uuid, $7::jsonb, CURRENT_TIMESTAMP)
         RETURNING *
       `;
       const result = await this.db.query(insertQuery, [campaignId, name, type || null, description || null, locationId || null, shopId || null, JSON.stringify({ canonical_name: canonical })]);

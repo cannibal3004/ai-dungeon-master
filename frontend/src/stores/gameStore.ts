@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { GameSession, ChatMessage, Character } from '../types/game';
+import type { GameSession, ChatMessage, Character } from '../types/game';
 
 interface GameState {
   currentSession: GameSession | null;

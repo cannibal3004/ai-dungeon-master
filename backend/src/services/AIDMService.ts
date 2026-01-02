@@ -40,8 +40,8 @@ export class AIDMService {
   private questModel: QuestModel;
   private redis: Redis | null = null;
   private toolExecutor: ToolExecutor;
-  private ttsService: TTSService;
-  private audioFxService: AudioFXService;
+  ttsService: TTSService;
+  audioFxService: AudioFXService;
   // Context/tokens limits can be added here if needed
 
   constructor() {
@@ -118,7 +118,6 @@ export class AIDMService {
   {
     // Build context from database
     const context = await this.buildContext(campaignId, characterId);
-    const sessionId = await this.getActiveSessionId(campaignId);
 
     // Build prompt with context
     const messages = buildDMPrompt(context, playerAction);
@@ -136,7 +135,7 @@ export class AIDMService {
     const response = await this.llmManager.generateCompletion(
       promptText,
       {
-        maxTokens: 2000, // Increased for gpt-5 models which need more output tokens
+        maxTokens: 4000, // Increased for gpt-5 models which need more output tokens
         temperature: 0.8, // More creative
         systemPrompt,
         model: narrativeCfg.model,
@@ -234,7 +233,7 @@ export class AIDMService {
         const secondResponse = await this.llmManager.generateCompletion(
           continuationPrompt,
           {
-            maxTokens: 2000,
+            maxTokens: 4000, // Increased for gpt-5 models which need more output tokens
             temperature: 0.8,
             systemPrompt,
             model: narrativeCfg.model,
@@ -257,55 +256,31 @@ export class AIDMService {
     await this.addRecentEvent(campaignId, `Player: ${playerAction}\nDM: ${finalNarrative}`);
 
     // Extract inventory changes and entities in parallel (fallback for models without tool support)
-    const [inventoryChanges] = await Promise.all([
-      response.tool_calls ? this.convertToolCallsToInventoryChanges(toolResults) : this.extractInventoryChanges(finalNarrative),
-      this.extractAndStoreEntities(campaignId, finalNarrative)
-    ]);
+    // Inventory changes are needed immediately; entity extraction can run in the background
+    const inventoryChanges = await (response.tool_calls
+      ? this.convertToolCallsToInventoryChanges(toolResults)
+      : this.extractInventoryChanges(finalNarrative));
 
-    let audioUrl: string | undefined;
-    let ambienceUrl: string | undefined;
-    try {
-      if (sessionId && this.ttsService.isEnabled()) {
-        const audio = await this.ttsService.synthesize(sessionId, finalNarrative);
-        audioUrl = audio?.url;
-      }
-    } catch (err) {
-      logger.warn('TTS generation skipped due to error', err);
-    }
-
-    try {
-      if (sessionId && this.audioFxService.isEnabled()) {
-        const sceneKey = context.currentLocation || context.currentLocationType || 'scene';
-        const mood = this.deriveMoodHint(playerAction, finalNarrative);
-        const ambiencePrompt = `Cinematic, loopable ambient bed for a D&D scene.
-Location: ${context.currentLocation || 'unknown location'} (${context.currentLocationType || 'unknown type'})
-Description: ${context.currentLocationDescription || 'No description provided.'}
-Mood: ${mood}
-Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
-        const ambience = await this.audioFxService.synthesizeAmbience(sessionId, sceneKey, ambiencePrompt);
-        ambienceUrl = ambience?.url;
-      }
-    } catch (err) {
-      logger.warn('Ambience generation skipped due to error', err);
-    }
+    // Fire-and-forget entity extraction so it doesn't block TTS or UI updates
+    this.extractAndStoreEntities(campaignId, finalNarrative).catch(err => {
+      logger.warn('Entity extraction failed (non-blocking)', err);
+    });
 
     logger.info('=== NARRATIVE SUMMARY ===');
     logger.info('FINAL_NARRATIVE', { narrative: finalNarrative });
     logger.info('INVENTORY_CHANGES', inventoryChanges);
     logger.info('COMBAT_START', { combatStart: combatStartPayload ? 'yes' : 'no' });
     logger.info('ENEMY_INFO_COUNT', { count: enemyInfoCollected.length });
-    logger.info('AUDIO_URL', { url: audioUrl || 'none' });
-    logger.info('AMBIENCE_URL', { url: ambienceUrl || 'none' });
 
-    await this.storeChatMessage(campaignId, 'assistant', finalNarrative, undefined, { audioUrl });
+    await this.storeChatMessage(campaignId, 'assistant', finalNarrative, undefined, { audioUrl: undefined });
 
     return {
-      narrative: finalNarrative + (toolResults.length > 0 ? '\n\n' + toolResults.join('\n') : ''),
+      narrative: finalNarrative,
       inventoryChanges,
       combatStart: combatStartPayload,
       enemyInfo: enemyInfoCollected,
-      audioUrl,
-      ambienceUrl,
+      audioUrl: undefined,
+      ambienceUrl: undefined,
     };
   }
 
@@ -355,7 +330,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     const response = await this.llmManager.generateCompletion(
       promptText,
       {
-        maxTokens: 200,
+        maxTokens: 4000,
         temperature: 0.9, // Very creative for personality
         systemPrompt,
         model: npcCfg.model,
@@ -380,7 +355,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     const response = await this.llmManager.generateCompletion(
       prompt,
       {
-        maxTokens: 800,
+        maxTokens: 4000,
         temperature: 0.7,
         model: encounterCfg.model,
       },
@@ -413,7 +388,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     const response = await this.llmManager.generateCompletion(
       prompt,
       {
-        maxTokens: 400,
+        maxTokens: 4000,
         temperature: 0.8,
         model: locationCfg.model,
       },
@@ -439,7 +414,7 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     const response = await this.llmManager.generateCompletion(
       prompt,
       {
-        maxTokens: 600,
+        maxTokens: 4000,
         temperature: 0.5, // More factual
         model: summaryCfg.model,
       },
@@ -747,6 +722,13 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
   }
 
   /**
+   * Public method to get the active session ID for a campaign (used by WebSocket)
+   */
+  async getSessionId(campaignId: string): Promise<string | null> {
+    return this.getActiveSessionId(campaignId);
+  }
+
+  /**
    * Add event to recent events tracking
    */
   private async addRecentEvent(campaignId: string, event: string): Promise<void> {
@@ -799,30 +781,6 @@ Style: atmospheric, no vocals, no speech, gentle loop, avoid abrupt endings.`;
     };
   }
 
-  private deriveMoodHint(action: string, narrative: string): string {
-    const text = `${action}\n${narrative}`.toLowerCase();
-    const moods: Array<{ key: string; label: string }> = [
-      { key: 'battle', label: 'tense, percussive, battle-ready' },
-      { key: 'combat', label: 'tense, percussive, battle-ready' },
-      { key: 'fight', label: 'tense, percussive, battle-ready' },
-      { key: 'danger', label: 'ominous, brooding, low drones' },
-      { key: 'mystic', label: 'mystical, airy pads, sparkles' },
-      { key: 'myster', label: 'mysterious, subtle pulses' },
-      { key: 'village', label: 'warm, rustic, acoustic textures' },
-      { key: 'town', label: 'warm, rustic, acoustic textures' },
-      { key: 'tavern', label: 'cozy, lute-like, gentle rhythm' },
-      { key: 'forest', label: 'natural, flowing, light percussion' },
-      { key: 'dungeon', label: 'dark, echoing, sparse percussion' },
-      { key: 'cave', label: 'dark, echoing, sparse percussion' },
-      { key: 'ruins', label: 'ancient, reverberant, distant choirs' },
-      { key: 'temple', label: 'sacred, choir-like, calm' },
-    ];
-    for (const m of moods) {
-      if (text.includes(m.key)) return m.label;
-    }
-    return 'neutral, exploratory, subtle movement, no vocals';
-  }
-
   /**
    * Extract inventory changes from narrative
    */
@@ -868,7 +826,7 @@ Narrative: ${narrative}`;
       const response = await this.llmManager.generateCompletion(
         extractionPrompt,
         {
-          maxTokens: 3000, // Increased for JSON responses with reasoning models
+          maxTokens: 4000, // Increased for JSON responses with reasoning models
           temperature: 0.1, // Lower temp = less reasoning, faster
           model: extractCfg.model,
         },
@@ -978,7 +936,7 @@ Narrative: ${narrative}`;
         const response = await this.llmManager.generateCompletion(
           extractionPrompt,
           {
-            maxTokens: 3000, // Increased for JSON responses with reasoning models
+            maxTokens: 4000, // Increased for JSON responses with reasoning models
             temperature: 0.1, // Lower temp = less reasoning, faster
             model: extractCfg.model,
           },

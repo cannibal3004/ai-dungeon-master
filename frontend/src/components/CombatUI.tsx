@@ -15,7 +15,6 @@ export function CombatUI({
   socket,
   combatState,
   currentCharacter,
-  onSystemMessage,
 }: {
   campaignId?: string;
   socket: any;
@@ -32,7 +31,6 @@ export function CombatUI({
     armor_class?: number;
     ability_scores?: { dexterity?: number };
   } | null;
-  onSystemMessage: (text: string) => void;
 }) {
   const [attackBonus, setAttackBonus] = useState(5);
   const [damageDice, setDamageDice] = useState('1d8+3');

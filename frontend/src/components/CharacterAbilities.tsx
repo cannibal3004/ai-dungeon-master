@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import api from '../services/api';
+import { useState, useEffect } from 'react';
+import { apiClient } from '../services/api';
 
 interface Spell {
   id: string;
@@ -38,8 +38,6 @@ export function CharacterAbilities({ characterId }: CharacterAbilitiesProps) {
   const [spellSlots, setSpellSlots] = useState<SpellSlot[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [activeTab, setActiveTab] = useState<'spells' | 'skills'>('spells');
-  const [showAddSpell, setShowAddSpell] = useState(false);
-  const [showAddSkill, setShowAddSkill] = useState(false);
 
   useEffect(() => {
     loadAbilities();
@@ -48,9 +46,9 @@ export function CharacterAbilities({ characterId }: CharacterAbilitiesProps) {
   const loadAbilities = async () => {
     try {
       const [spellsRes, slotsRes, skillsRes] = await Promise.all([
-        api.get(`/characters/${characterId}/abilities/spells`),
-        api.get(`/characters/${characterId}/abilities/spell-slots`),
-        api.get(`/characters/${characterId}/abilities/skills`),
+        apiClient.get(`/characters/${characterId}/abilities/spells`),
+        apiClient.get(`/characters/${characterId}/abilities/spell-slots`),
+        apiClient.get(`/characters/${characterId}/abilities/skills`),
       ]);
       setSpells(spellsRes.data.data || []);
       setSpellSlots(slotsRes.data.data || []);
@@ -62,7 +60,7 @@ export function CharacterAbilities({ characterId }: CharacterAbilitiesProps) {
 
   const handleUseSpellSlot = async (level: number) => {
     try {
-      await api.post(`/characters/${characterId}/abilities/spell-slots/${level}/use`);
+      await apiClient.post(`/characters/${characterId}/abilities/spell-slots/${level}/use`);
       loadAbilities();
     } catch (error) {
       console.error('Failed to use spell slot:', error);
@@ -71,7 +69,7 @@ export function CharacterAbilities({ characterId }: CharacterAbilitiesProps) {
 
   const handleRestoreSpellSlots = async () => {
     try {
-      await api.post(`/characters/${characterId}/abilities/spell-slots/restore`);
+      await apiClient.post(`/characters/${characterId}/abilities/spell-slots/restore`);
       loadAbilities();
     } catch (error) {
       console.error('Failed to restore spell slots:', error);
@@ -80,7 +78,7 @@ export function CharacterAbilities({ characterId }: CharacterAbilitiesProps) {
 
   const handleRemoveSpell = async (spellId: string) => {
     try {
-      await api.delete(`/characters/${characterId}/abilities/spells/${spellId}`);
+      await apiClient.delete(`/characters/${characterId}/abilities/spells/${spellId}`);
       loadAbilities();
     } catch (error) {
       console.error('Failed to remove spell:', error);

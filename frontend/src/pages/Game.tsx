@@ -420,7 +420,7 @@ export default function Game() {
     });
 
     socket.on('combat:hp-updated', (data: { combatantId: string; newHp: number; maxHp: number }) => {
-      setCombatState((prev) => {
+      setCombatState((prev: typeof combatState) => {
         if (!prev) return prev;
         const updated = { ...prev, turnOrder: prev.turnOrder.map((c: any) => c.id === data.combatantId ? { ...c, hp: data.newHp, maxHp: data.maxHp } : c) };
         return updated;
@@ -462,6 +462,40 @@ export default function Game() {
       });
     });
 
+    // Audio ready - TTS has finished generating
+    socket.on('game:audio-ready', (data: { campaignId: string; audioUrl: string; narrativeId?: string }) => {
+      if (data.campaignId === campaignId) {
+        console.log('[Audio] TTS ready:', data.audioUrl);
+        setLastAudioUrl(data.audioUrl);
+        // Update the last narrative message with the audio URL
+        setMessages((prev) => {
+          const lastNarrative = [...prev].reverse().find(m => m.type === 'narrative' && !m.audioUrl);
+          if (lastNarrative) {
+            return prev.map(m => m.id === lastNarrative.id ? { ...m, audioUrl: data.audioUrl } : m);
+          }
+          return prev;
+        });
+        // Auto-play if TTS is enabled
+        if (ttsEnabledRef.current) {
+          console.log('[Audio] Auto-playing TTS');
+          unlockAudio();
+          playAudioWithAutoplay(data.audioUrl);
+        }
+      }
+    });
+
+    // Ambience ready - background music has been generated
+    socket.on('game:ambience-ready', (data: { campaignId: string; ambienceUrl: string; narrativeId?: string }) => {
+      if (data.campaignId === campaignId) {
+        console.log('[Ambience] Ready:', data.ambienceUrl);
+        const resolved = resolveAudioUrl(data.ambienceUrl);
+        setAmbienceUrl(resolved);
+        if (ambienceOn) {
+          playAmbience(resolved);
+        }
+      }
+    });
+
     socketRef.current = socket;
   };
 
@@ -490,10 +524,11 @@ export default function Game() {
   const [ambienceVolume, setAmbienceVolume] = useState<number>(0.5);
   const [showNarrationMenu, setShowNarrationMenu] = useState<boolean>(false);
   const [showAmbienceMenu, setShowAmbienceMenu] = useState<boolean>(false);
+  const [showDiceMenu, setShowDiceMenu] = useState<boolean>(false);
   const narrationMenuRef = useRef<HTMLDivElement | null>(null);
   const ambienceMenuRef = useRef<HTMLDivElement | null>(null);
+  const diceMenuRef = useRef<HTMLDivElement | null>(null);
   const ttsEnabledRef = useRef<boolean>(false);
-  const ambienceOnRef = useRef<boolean>(true);
 
   const extractText = (node: any): string => {
     if (node === null || node === undefined) return '';
@@ -661,7 +696,7 @@ export default function Game() {
             resolve();
           };
           audio.addEventListener('canplay', onCanPlay);
-          const timeoutId = setTimeout(() => {
+          setTimeout(() => {
             console.log('[Autoplay] canplay timeout, proceeding anyway');
             audio.removeEventListener('canplay', onCanPlay);
             resolve();
@@ -742,7 +777,7 @@ export default function Game() {
   // Initialize shared audio element and listeners
   useEffect(() => {
     const audio = new Audio();
-    audio.playsInline = true;
+    audio.setAttribute('playsinline', 'true');
     audio.preload = 'auto';
     audio.crossOrigin = 'anonymous';
     audioRef.current = audio;
@@ -758,7 +793,7 @@ export default function Game() {
     audio.addEventListener('ended', onEnd);
     // Ambience element (looping)
     const ambience = new Audio();
-    ambience.playsInline = true;
+    ambience.setAttribute('playsinline', 'true');
     ambience.preload = 'auto';
     ambience.crossOrigin = 'anonymous';
     ambience.loop = true;
@@ -801,6 +836,9 @@ export default function Game() {
       if (showAmbienceMenu && ambienceMenuRef.current && target && !ambienceMenuRef.current.contains(target)) {
         setShowAmbienceMenu(false);
       }
+      if (showDiceMenu && diceMenuRef.current && target && !diceMenuRef.current.contains(target)) {
+        setShowDiceMenu(false);
+      }
       if (showSaveMenu && saveMenuRef.current && target && !saveMenuRef.current.contains(target)) {
         setShowSaveMenu(false);
       }
@@ -809,6 +847,7 @@ export default function Game() {
       if (e.key === 'Escape') {
         if (showNarrationMenu) setShowNarrationMenu(false);
         if (showAmbienceMenu) setShowAmbienceMenu(false);
+        if (showDiceMenu) setShowDiceMenu(false);
         if (showSaveMenu) setShowSaveMenu(false);
       }
     };
@@ -818,7 +857,7 @@ export default function Game() {
       document.removeEventListener('pointerdown', handleOutside);
       document.removeEventListener('keydown', handleKey);
     };
-  }, [showNarrationMenu, showAmbienceMenu, showSaveMenu]);
+  }, [showNarrationMenu, showAmbienceMenu, showDiceMenu, showSaveMenu]);
 
 
   const scrollToBottom = () => {
@@ -892,7 +931,14 @@ export default function Game() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <>
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       {/* Header */}
       <header style={{
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
@@ -939,6 +985,8 @@ export default function Game() {
               onClick={() => {
                 setShowNarrationMenu((v) => !v);
                 setShowAmbienceMenu(false);
+                setShowDiceMenu(false);
+                setShowSaveMenu(false);
               }}
               style={{
                 width: '44px',
@@ -1049,6 +1097,8 @@ export default function Game() {
               onClick={() => {
                 setShowAmbienceMenu((v) => !v);
                 setShowNarrationMenu(false);
+                setShowDiceMenu(false);
+                setShowSaveMenu(false);
               }}
               style={{
                 width: '44px',
@@ -1142,6 +1192,60 @@ export default function Game() {
             )}
           </div>
 
+          {/* Dice roller dropdown */}
+          <div style={{ position: 'relative' }} ref={diceMenuRef}>
+            <button
+              aria-label="Dice roller"
+              title="Dice roller"
+              onClick={() => {
+                setShowDiceMenu((v) => !v);
+                setShowNarrationMenu(false);
+                setShowAmbienceMenu(false);
+                setShowSaveMenu(false);
+              }}
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.22)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '1.15rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.25)'
+              }}
+            >🎲</button>
+            {showDiceMenu && (
+              <div style={{
+                position: 'absolute',
+                right: 0,
+                marginTop: '0.65rem',
+                minWidth: '320px',
+                background: '#0f172a',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: '10px',
+                boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
+                padding: '0.75rem',
+                zIndex: 30
+              }}>
+                <DiceRoller
+                  forceExpanded
+                  hideHeader
+                  onRoll={(rollText) => {
+                    setActionInput((prev) => {
+                      const separator = prev.trim() ? ' ' : '';
+                      return `${prev}${separator}${rollText}`;
+                    });
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
           {/* Save states dropdown */}
           <div style={{ position: 'relative' }} ref={saveMenuRef}>
             <button
@@ -1151,6 +1255,7 @@ export default function Game() {
                 setShowSaveMenu((v) => !v);
                 setShowNarrationMenu(false);
                 setShowAmbienceMenu(false);
+                setShowDiceMenu(false);
               }}
               style={{
                 width: '44px',
@@ -1429,7 +1534,7 @@ export default function Game() {
                       position: 'relative',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center',
+                      justifyContent: 'space-between',
                       marginBottom: '0.5rem',
                       minHeight: '32px'
                     }}>
@@ -1443,32 +1548,35 @@ export default function Game() {
                         fontWeight: 'bold',
                         textTransform: 'uppercase',
                         textAlign: 'center',
-                        width: '100%'
+                        flex: 1
                       }}>
                         {message.type === 'narrative' ? '🎭 Dungeon Master' : message.type === 'action' ? '⚔️ Your Action' : '⚠️ System'}
                       </div>
-                      {message.audioUrl && (
-                        <button
-                          onClick={() => {
-                            const url = resolveAudioUrl(message.audioUrl!);
-                            setLastAudioUrl(url);
-                            playAudio(url);
-                          }}
-                          style={{
-                            position: 'absolute',
-                            right: 0,
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            padding: '0.3rem 0.65rem',
-                            borderRadius: '4px',
-                            border: '1px solid rgba(255,255,255,0.3)',
-                            background: 'rgba(255,255,255,0.12)',
-                            color: 'white',
-                            cursor: 'pointer',
-                            fontSize: '0.8rem'
-                          }}
-                        >▶ Play Clip</button>
-                      )}
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        {message.type === 'narrative' && !message.audioUrl && (
+                          <div style={{ fontSize: '0.75rem', color: '#ffb74d', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span style={{ animation: 'spin 1s linear infinite' }}>⏳</span> Generating audio...
+                          </div>
+                        )}
+                        {message.audioUrl && (
+                          <button
+                            onClick={() => {
+                              const url = resolveAudioUrl(message.audioUrl!);
+                              setLastAudioUrl(url);
+                              playAudio(url);
+                            }}
+                            style={{
+                              padding: '0.3rem 0.65rem',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.3)',
+                              background: 'rgba(255,255,255,0.12)',
+                              color: 'white',
+                              cursor: 'pointer',
+                              fontSize: '0.8rem'
+                            }}
+                          >▶ Play Clip</button>
+                        )}
+                      </div>
                     </div>
                     <div style={{ 
                       color: '#e0e0e0',
@@ -1611,24 +1719,12 @@ export default function Game() {
           overflowY: 'auto',
           color: '#111'
         }}>
-          {/* Dice Roller */}
-          <DiceRoller 
-            onRoll={(rollText) => {
-              // Auto-fill the action input with the roll result
-              setActionInput((prev) => {
-                const separator = prev.trim() ? ' ' : '';
-                return `${prev}${separator}${rollText}`;
-              });
-            }}
-          />
-
           {/* Combat UI */}
           <CombatUI
             campaignId={campaignId}
             socket={socketRef.current}
             combatState={combatState}
             currentCharacter={character}
-            onSystemMessage={(text) => addMessage('system', text)}
           />
 
           {/* Enemy Info Panel */}
@@ -2010,6 +2106,7 @@ export default function Game() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

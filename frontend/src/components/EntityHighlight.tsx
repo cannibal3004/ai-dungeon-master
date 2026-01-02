@@ -1,4 +1,4 @@
-import { ReactNode, useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 interface WorldEntity {
   id: string;
@@ -32,18 +32,8 @@ export function HighlightedText({ text, entities }: EntityHighlightProps): React
     return combined;
   }, [entities]);
 
-  // Create a map of entity names to their data for quick lookup
-  const entityMap = useMemo(() => {
-    const map = new Map<string, WorldEntity>();
-    allEntities.forEach(entity => {
-      map.set(entity.name.toLowerCase(), entity);
-    });
-    return map;
-  }, [allEntities]);
-
   // Split text and highlight entity mentions
   const parts: (string | { entity: WorldEntity; text: string })[] = [];
-  let remaining = text;
   let lastIndex = 0;
 
   // Find all entity mentions (case-insensitive)

@@ -30,9 +30,24 @@ export class TTSService {
 
   /**
    * Preprocess text for better TTS pronunciation
+   * - Strip basic markdown (bold/italics/links/code) that can confuse TTS
    * - Replace dice notation (1d8, 2d6, etc.) with spelled-out versions
    */
-  private preprocessTextForTTS(text: string): string {
+  private preprocessTextForTTS(raw: string): string {
+    // Remove common markdown wrappers and code/links
+    let text = raw
+      .replace(/```[\s\S]*?```/g, '') // drop fenced code blocks entirely
+      .replace(/`([^`]+)`/g, '$1') // inline code
+      .replace(/\*\*([^*]+)\*\*/g, '$1') // bold
+      .replace(/__([^_]+)__/g, '$1') // underline
+      .replace(/\*([^*]+)\*/g, '$1') // italics
+      .replace(/_([^_]+)_/g, '$1') // italics/underline
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // images
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // links keep text
+      .replace(/[>#]/g, '') // headers/quotes markers
+      .replace(/\s{2,}/g, ' ') // collapse whitespace
+      .trim();
+
     const numberWords: Record<number, string> = {
       1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five',
       6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten',
