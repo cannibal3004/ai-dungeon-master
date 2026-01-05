@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { CharacterService } from '../services/CharacterService';
+import { getDDBImportService } from '../services/DDBImportService';
 import { z } from 'zod';
 import { AppError } from '../middleware/errorHandler';
 import { RACES, CLASSES } from '../rules/constants';
@@ -12,6 +13,14 @@ function getCharacterService(): CharacterService {
   }
   return characterService;
 }
+
+const importSchema = z.object({
+  campaignId: z.string().uuid(),
+  url: z.string().url().optional(),
+  ddb: z.any().optional(),
+}).refine((val) => !!val.url || val.ddb !== undefined, {
+  message: 'Provide either a D&D Beyond character URL or a JSON payload',
+});
 
 // Validation schemas
 const createCharacterSchema = z.object({
@@ -173,5 +182,26 @@ export async function deleteCharacter(req: Request, res: Response, next: NextFun
     });
   } catch (error) {
     next(error);
+  }
+}
+
+export async function importFromDDB(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = (req as any).userId;
+    const { campaignId, ddb, url } = importSchema.parse(req.body);
+
+    const payload = url ?? ddb;
+    const result = await getDDBImportService().importCharacter(campaignId, userId, payload);
+
+    res.status(201).json({
+      status: 'success',
+      data: result,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, error.errors[0].message));
+    } else {
+      next(error);
+    }
   }
 }

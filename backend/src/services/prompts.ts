@@ -45,6 +45,11 @@ export interface DMContext {
     personality: string;
     relationship: string;
   }>;
+  characterSummaries?: Array<{
+    name: string;
+    combatSummary?: string;
+    roleplaySummary?: string;
+  }>;
   partyMembers: Array<{
     id: string;
     name: string;
@@ -61,6 +66,25 @@ export interface DMContext {
     objectives: string[];
     rewards?: string;
   }>;
+  companions?: Array<{
+    id?: string;
+    name: string;
+    role?: string;
+    description?: string;
+    hp?: number;
+    maxHp?: number;
+    ac?: number;
+    dexterity?: number;
+    level?: number;
+    notes?: string;
+    status?: string;
+  }>;
+  gameTime?: {
+    day: number;
+    hour: number;
+    minute: number;
+    timeOfDay?: string;
+  };
   sessionSummary?: string;
   knownLocations?: Array<{ name: string; type: string }>;
   knownNPCs?: Array<{ name: string; role: string; location: string }>;
@@ -108,6 +132,37 @@ export interface GeneratedEncounter {
 }
 
 export const SYSTEM_PROMPTS = {
+  COMBAT_MODE: `You are a Dungeon Master running ACTIVE COMBAT in a D&D 5e session. Your role during combat:
+
+TURN DISCIPLINE:
+- STRICTLY enforce turn order - only the current combatant acts
+- After each action resolves, use end_current_turn() to advance
+- Never skip turns or allow multiple actions per turn unless rules permit
+- Use get_turn_order() if uncertain whose turn it is
+
+COMBAT ACTIONS:
+- Keep descriptions tactical and concise (2-3 sentences per action)
+- Resolve attacks/damage immediately when rolled
+- Track HP changes with update_character_hp() for players/companions
+- Describe enemy actions clearly but briefly on their turns
+- Present clear combat choices: "Attack which enemy? Move where? Use which ability?"
+
+PACING:
+- No long narrative diversions during combat
+- Focus on immediate threats and tactical positioning
+- Save story/dialogue for after combat ends
+- Move combat forward efficiently while maintaining tension
+
+TTS FRIENDLY:
+- Avoid tables or bullet lists for stats; state them inline (e.g., "Shadow Stalker has 15 HP, AC 13").
+- Keep outputs concise and flowing as natural speech.
+
+CONTEXT DISCIPLINE:
+- Use provided combat summaries for characters; keep to HP/AC, attack bonuses, damage dice, save DCs, key reactions/features, conditions, and spell slots.
+- Do NOT surface long backstories, bonds, or non-combat trivia unless the player asks during combat.
+
+When combat ends (all enemies or players defeated), provide a brief aftermath and transition back to exploration.`,
+
   DUNGEON_MASTER: `You are an experienced Dungeon Master running a D&D 5th Edition campaign. Your role is to:
 - Create engaging narratives and vivid descriptions
 - Respond to player actions with appropriate consequences
@@ -117,10 +172,9 @@ export const SYSTEM_PROMPTS = {
 - Follow D&D 5e rules when relevant
 
 NAMING CONVENTIONS:
-- When naming is needed (places, NPCs, items), YOU provide the names - never ask the player to name things
-- It's fine for things to start mysterious and be revealed later - that's part of discovery
+- DO NOT REUSE NAMES already established in the campaign
+- When naming is needed (places, NPCs, items), YOU provide the names - be creative and fitting to the setting
 - But when a name is revealed or needed, YOU decide it confidently
-- Example: DON'T say "What would you like to name this village?"
 - The player controls their CHARACTER, you control the WORLD
 
 CRITICAL RULES FOR DICE ROLLS:
@@ -147,6 +201,9 @@ INVENTORY & STATE MANAGEMENT:
 
 COMBAT MANAGEMENT:
 - **USE start_combat() to initiate structured combat when enemies are encountered that require turn-based tracking**
+- **ALWAYS start_combat() when introducing hostile creatures - don't describe fights in plain text**
+- **USE suggest_enemies() BEFORE introducing new enemies to get CR-appropriate options for the party level**
+- **RESPECT challenge rating limits: Avoid enemies much stronger than the party unless plot-critical**
 - **USE get_turn_order() to determine whose turn it is before describing actions in combat**
 - **USE end_current_turn() to advance to the next combatant after their action is complete**
 - **USE lookup_enemy() to fetch accurate enemy stats from the SRD when enemies are introduced**
@@ -154,10 +211,40 @@ COMBAT MANAGEMENT:
 - PROMPT the player for their actions on their turn, and WAIT for their input before proceeding
 - DO NOT skip turns, assume actions, or progress combat without explicit player input
 
+TTS FRIENDLY:
+- Avoid tables or bullet lists for stats; state them inline but only when relevant.
+- Use concise prose that sounds natural when read aloud.
+- Do not read out tool function calls; they are for backend processing only.
+- Keep outputs concise and flowing as natural speech.
+- Do not list out the player's inventory in detail unless they ask; just confirm additions/removals.
+
+CONTEXT DISCIPLINE:
+- Outside combat, avoid dumping combat-only stats (HP/AC/spell slots/attack bonuses) unless the player explicitly asks; keep focus on roleplay and story hooks.
+- Keep combat-only details gated behind active combat mode; use roleplay summaries for personality, background, goals, and non-combat proficiencies.
+
+Challenge Rating SAFETY GUIDELINES:
+- For party level 1-2: Use CR 0-2 enemies (goblins, bandits, wolves)
+- For party level 3-5: Use CR 1-4 enemies (orcs, ogres, bugbears) 
+- For party level 6-10: Use CR 3-8 enemies (trolls, young dragons, giants)
+- For party level 11+: Use CR 5+ enemies (adult dragons, beholders, liches)
+- When in doubt, use suggest_enemies() to get safe options
+- Deadly encounters are acceptable if the narrative warrants it, but warn players first
+
+TIME TRACKING:
+- At the very start of the adventure, if no game time exists, set it immediately using advance_time (description like "adventure begins") so Day 1, 08:00 is established.
+- **USE advance_time() when significant time passes** (travel, resting, waiting, crafting, etc.)
+- Long rest: advance_time(hours: 8, description: "long rest")
+- Short rest: advance_time(hours: 1, description: "short rest")
+- Travel: advance_time(hours: 4, description: "traveled to town")
+- Reference current time of day for encounters and atmosphere
+
 OTHER AVAILABLE TOOLS:
+- advance_time(hours?, minutes?, description?): advance in-game time and track rest/travel
+- suggest_enemies(partyLevel, difficulty?, environment?, enemyType?): get CR-appropriate enemy suggestions
 - start_combat(enemies: [{ name, hp, maxHp, ac, dexterity }]): initialize structured combat tracking
 - lookup_enemy(name: string): fetch SRD monster stats for accurate combat descriptions
 - upsert_world_entities(locations, npcs, shops, items): create/update world entities with canonical names
+- add_companions(companions) / remove_companions(names): manage party allies/followers
 - update_character_xp() / roll_dice() / add_quest() / update_quest()
 
 Keep responses concise but atmospheric. Describe scenes, NPC reactions, and outcomes clearly. Ask for dice rolls when appropriate. Present meaningful choices to players.`,
@@ -195,7 +282,7 @@ Keep it concise (2-3 paragraphs) but evocative. Match the tone to the setting.`,
 /**
  * Build D&D 5e rules reference for LLM context
  */
-export function buildRulesContext(): string {
+export function buildExplorationRulesContext(): string {
   const racesList = Object.entries(RACES)
     .map(([_key, race]) => {
       const bonusStr = Object.entries(race.abilityBonuses)
@@ -214,7 +301,7 @@ export function buildRulesContext(): string {
     .map(([_key, skill]) => `${skill.name} (${skill.ability})`)
     .join(', ');
 
-  return `D&D 5E RULES REFERENCE:
+  return `D&D 5E EXPLORATION REFERENCE:
 
 RACES (with ability bonuses):
 ${racesList}
@@ -225,59 +312,56 @@ ${classesList}
 SKILLS (and their base abilities):
 ${skillsList}
 
-KEY MECHANICS:
-- Advantage: roll 2d20, take higher
-- Disadvantage: roll 2d20, take lower
-- Ability Check: 1d20 + ability modifier
-- Skill Check: 1d20 + ability modifier + proficiency (if applicable)
-- Attack Roll: 1d20 + attack bonus (DEX or STR modifier + weapon bonus)
-- Saving Throw: 1d20 + ability modifier + proficiency (if applicable)
-- Proficiency Bonus: +2 for levels 1-4, +3 for levels 5-8, +4 for levels 9-12, +5 for levels 13+
+CHECKS & DCs:
+- Ability/Skill Check: 1d20 + ability mod (+ proficiency if applicable)
+- DCs: Very easy 5, Easy 10, Medium 15, Hard 20, Very hard 25, Nearly impossible 30
+- Advantage: roll 2d20, take higher; Disadvantage: roll 2d20, take lower
 
-DIFFICULTY CLASSES (DC):
-- Very easy: 5
-- Easy: 10
-- Medium: 15
-- Hard: 20
-- Very hard: 25
-- Nearly impossible: 30
+Use these for travel, social, investigation, downtime, and other non-combat actions.`;
+}
 
-DAMAGE BY WEAPON TYPE:
-- Light: 1d4 (dagger)
-- Short: 1d6 (shortsword, mace)
-- Medium: 1d8 (longsword, spear)
-- Heavy: 1d10-1d12 (greataxe, greatsword)
-- Ranged: 1d6-1d8 (bow, crossbow)
-
-Use these rules when describing combat outcomes, ability checks, or suggesting challenges to ensure mechanical accuracy.`;
+export function buildCombatRulesContext(): string {
+  return `D&D 5E COMBAT REFERENCE:
+- Attack Roll: d20 + attack bonus (STR/DEX mod + prof + weapon bonus)
+- Damage: roll weapon/spell dice, add STR/DEX for weapon; apply resistances/vulnerabilities
+- Saving Throw: d20 + ability mod (+ proficiency if proficient)
+- Spell save DC: 8 + proficiency bonus + spellcasting ability mod
+- Advantage/Disadvantage: roll 2d20, take higher/lower
+- Typical weapon dice: light 1d4, shorts 1d6, martial 1d8, heavy 1d10-1d12, bows 1d6-1d8
+Keep outputs concise and resolve rolls immediately.`;
 }
 
 export function buildDMPrompt(context: DMContext, playerAction: string): ChatMessage[] {
+  const isInCombat = context.combatState?.isActive && context.combatState.turnOrder && context.combatState.turnOrder.length > 0;
+  
   const messages: ChatMessage[] = [
     {
       role: 'system',
-      content: SYSTEM_PROMPTS.DUNGEON_MASTER,
+      content: isInCombat ? SYSTEM_PROMPTS.COMBAT_MODE : SYSTEM_PROMPTS.DUNGEON_MASTER,
     },
     {
       role: 'system',
-      content: buildRulesContext(),
+      content: isInCombat ? buildCombatRulesContext() : buildExplorationRulesContext(),
     },
   ];
 
-  // Campaign name and description inform setting and tone
-  if (context.campaignName) {
-    messages.push({ role: 'system', content: `Campaign: ${context.campaignName}` });
-  }
-  if (context.campaignDescription) {
-    messages.push({ role: 'system', content: `Campaign premise: ${context.campaignDescription}` });
-  }
+  // In combat mode, skip campaign lore to save tokens
+  if (!isInCombat) {
+    // Campaign name and description inform setting and tone
+    if (context.campaignName) {
+      messages.push({ role: 'system', content: `Campaign: ${context.campaignName}` });
+    }
+    if (context.campaignDescription) {
+      messages.push({ role: 'system', content: `Campaign premise: ${context.campaignDescription}` });
+    }
 
-  // Add campaign context
-  if (context.sessionSummary) {
-    messages.push({
-      role: 'system',
-      content: `Previous session summary: ${context.sessionSummary}`,
-    });
+    // Add campaign context
+    if (context.sessionSummary) {
+      messages.push({
+        role: 'system',
+        content: `Previous session summary: ${context.sessionSummary}`,
+      });
+    }
   }
 
   // Add current party info
@@ -289,21 +373,73 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
     content: `Current party: ${partyInfo}`,
   });
 
-  // Add location context (detailed)
+  // Add role-specific character summaries, gated by mode to save context
+  const combatSummaries = (context.characterSummaries || [])
+    .filter((c) => c.combatSummary && c.combatSummary.trim().length > 0)
+    .map((c) => `${c.name}: ${c.combatSummary!.slice(0, 320)}${c.combatSummary!.length > 320 ? '…' : ''}`);
+  const rpSummaries = (context.characterSummaries || [])
+    .filter((c) => c.roleplaySummary && c.roleplaySummary.trim().length > 0)
+    .map((c) => `${c.name}: ${c.roleplaySummary!.slice(0, 320)}${c.roleplaySummary!.length > 320 ? '…' : ''}`);
+
+  if (isInCombat && combatSummaries.length > 0) {
+    messages.push({
+      role: 'system',
+      content: `Combat summaries (use these instead of guessing stats; keep RP flavor minimal in combat): ${combatSummaries.join(' | ')}`,
+    });
+  } else if (!isInCombat && rpSummaries.length > 0) {
+    messages.push({
+      role: 'system',
+      content: `Roleplay summaries (omit combat stats unless the player asks): ${rpSummaries.join(' | ')}`,
+    });
+  }
+
+  // Add game time if available
+  if (context.gameTime) {
+    const timeStr = `Day ${context.gameTime.day}, ${String(context.gameTime.hour).padStart(2, '0')}:${String(context.gameTime.minute).padStart(2, '0')} (${context.gameTime.timeOfDay})`;
+    messages.push({
+      role: 'system',
+      content: `Current game time: ${timeStr}`,
+    });
+  }
+
+  if (context.companions && context.companions.length > 0) {
+    const companionInfo = context.companions
+      .map((c) => {
+        const stats: string[] = [];
+        if (c.hp !== undefined && c.maxHp !== undefined) stats.push(`HP ${c.hp}/${c.maxHp}`);
+        if (c.ac !== undefined) stats.push(`AC ${c.ac}`);
+        if (c.dexterity !== undefined) stats.push(`DEX ${c.dexterity}`);
+        if (c.level !== undefined) stats.push(`Lvl ${c.level}`);
+        const role = c.role ? `${c.role}` : 'companion';
+        const summary = c.description ? ` - ${c.description.slice(0, 80)}${c.description.length > 80 ? '…' : ''}` : '';
+        const statStr = stats.length > 0 ? ` [${stats.join(', ')}]` : '';
+        const notes = c.notes ? ` (${c.notes.slice(0, 60)}${c.notes.length > 60 ? '…' : ''})` : '';
+        const status = c.status && c.status !== 'active' ? ` {${c.status}}` : '';
+        return `${c.name} (${role})${statStr}${status}${summary}${notes}`;
+      })
+      .join(', ');
+
+    messages.push({
+      role: 'system',
+      content: `Traveling companions/allies: ${companionInfo}`,
+    });
+  }
+
+  // Add location context (detailed in exploration, minimal in combat)
   if (context.currentLocation) {
     const locationDetails: string[] = [
       `Current location: ${context.currentLocation}`,
     ];
     
-    if (context.currentLocationType) {
+    if (!isInCombat && context.currentLocationType) {
       locationDetails.push(`Location type: ${context.currentLocationType}`);
     }
     
-    if (context.currentLocationDescription) {
+    if (!isInCombat && context.currentLocationDescription) {
       locationDetails.push(`Description: ${context.currentLocationDescription}`);
     }
     
-    if (context.npcAtCurrentLocation && context.npcAtCurrentLocation.length > 0) {
+    if (!isInCombat && context.npcAtCurrentLocation && context.npcAtCurrentLocation.length > 0) {
       // Provide rich NPC context to help LLM distinguish similar characters
       const npcDetails = context.npcAtCurrentLocation
         .map((npc) => {
@@ -321,21 +457,21 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
       locationDetails.push(`NPCs here: ${npcDetails}`);
     }
     
-    if (context.shopsAtCurrentLocation && context.shopsAtCurrentLocation.length > 0) {
+    if (!isInCombat && context.shopsAtCurrentLocation && context.shopsAtCurrentLocation.length > 0) {
       const shopsHere = context.shopsAtCurrentLocation
         .map((shop) => `${shop.name}${shop.type ? ` (${shop.type})` : ''}`)
         .join(', ');
       locationDetails.push(`Shops here: ${shopsHere}`);
     }
     
-    if (context.itemsAtCurrentLocation && context.itemsAtCurrentLocation.length > 0) {
+    if (!isInCombat && context.itemsAtCurrentLocation && context.itemsAtCurrentLocation.length > 0) {
       const itemsHere = context.itemsAtCurrentLocation
         .map((item) => `${item.name}${item.type ? ` (${item.type})` : ''}`)
         .join(', ');
       locationDetails.push(`Items available: ${itemsHere}`);
     }
     
-    if (context.nearbyLocations && context.nearbyLocations.length > 0) {
+    if (!isInCombat && context.nearbyLocations && context.nearbyLocations.length > 0) {
       const nearby = context.nearbyLocations
         .map((loc) => `${loc.name} (${loc.type})${loc.travelTime ? ` - ${loc.travelTime}` : ''}`)
         .join(', ');
@@ -349,8 +485,8 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
   }
 
 
-  // Add active NPCs
-  if (context.activeNPCs.length > 0) {
+  // Add active NPCs (skip in combat unless they're combatants)
+  if (!isInCombat && context.activeNPCs.length > 0) {
     const npcInfo = context.activeNPCs
       .map((npc) => `${npc.name}: ${npc.personality} (${npc.relationship})`)
       .join('\n');
@@ -360,24 +496,24 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
     });
   }
 
-  // Add recent events for context
-  if (context.recentEvents.length > 0) {
+  // Add recent events for context (skip in combat)
+  if (!isInCombat && context.recentEvents.length > 0) {
     messages.push({
       role: 'system',
       content: `Recent events:\n${context.recentEvents.slice(-5).join('\n')}`,
     });
   }
 
-  // Add quest objectives
-  if (context.questObjectives.length > 0) {
+  // Add quest objectives (skip in combat)
+  if (!isInCombat && context.questObjectives.length > 0) {
     messages.push({
       role: 'system',
       content: `Active objectives:\n${context.questObjectives.join('\n')}`,
     });
   }
 
-  // Add active quests with details
-  if (context.activeQuests && context.activeQuests.length > 0) {
+  // Add active quests with details (skip in combat)
+  if (!isInCombat && context.activeQuests && context.activeQuests.length > 0) {
     const questDetails = context.activeQuests.map(q => {
       let details = `**${q.title}**`;
       if (q.giver) details += ` (from ${q.giver})`;
@@ -393,9 +529,10 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
     });
   }
 
-  // Add relevant world knowledge (limited to nearby locations to save tokens)
-  // The LLM already knows about current location NPCs/shops/items from the location context above
-  const worldKnowledge: string[] = [];
+  // Add relevant world knowledge (skip in combat to save tokens)
+  if (!isInCombat) {
+    // The LLM already knows about current location NPCs/shops/items from the location context above
+    const worldKnowledge: string[] = [];
   
   // Only include nearby locations (not the full list of all discovered locations)
   if (context.nearbyLocations && context.nearbyLocations.length > 0) {
@@ -429,11 +566,12 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
     }
   }
 
-  if (worldKnowledge.length > 0) {
-    messages.push({
-      role: 'system',
-      content: `Nearby area knowledge:\n${worldKnowledge.join('\n')}`,
-    });
+    if (worldKnowledge.length > 0) {
+      messages.push({
+        role: 'system',
+        content: `Nearby area knowledge:\n${worldKnowledge.join('\n')}`,
+      });
+    }
   }
 
   // Add active character's inventory

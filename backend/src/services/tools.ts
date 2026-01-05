@@ -3,10 +3,12 @@
  * Allows the LLM to directly modify character state during narrative generation
  */
 
+import { CampaignModel } from '../models/Campaign';
 import { CharacterModel } from '../models/Character';
 import { QuestModel } from '../models/Quest';
 import { WorldEntityModel } from '../models/WorldEntity';
 import { logger } from '../utils/logger';
+import { suggestEnemies } from './enemySuggestions';
 
 export interface Tool {
   type: 'function';
@@ -228,7 +230,59 @@ export const CHARACTER_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
-      name: 'start_combat',
+      name: 'add_companions',
+        description: 'Add or update party companions/allies who travel with the player. Use when the party gains a follower, pet, or ally that persists across scenes.',
+        parameters: {
+          type: 'object',
+          properties: {
+            companions: {
+              type: 'array',
+              description: 'Companion records to upsert (matched by name, case-insensitive)',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: 'Companion name (unique key)' },
+                  role: { type: 'string', description: 'Role/archetype (scout, healer, pet, hireling)' },
+                  description: { type: 'string', description: 'Brief look/personality/combat style' },
+                  hp: { type: 'number', description: 'Current HP if relevant' },
+                  maxHp: { type: 'number', description: 'Max HP if relevant' },
+                  ac: { type: 'number', description: 'Armor Class if relevant' },
+                  dexterity: { type: 'number', description: 'Dex score or modifier for initiative ordering' },
+                  level: { type: 'number', description: 'Approximate level or strength' },
+                  status: { type: 'string', description: 'State: active, benched, resting, dead, etc.' },
+                  notes: { type: 'string', description: 'Any extra notes (abilities, gear, limits)' },
+                  id: { type: 'string', description: 'Stable ID if already known; omit to auto-generate' }
+                },
+                required: ['name']
+              }
+            }
+          },
+          required: ['companions']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'remove_companions',
+        description: 'Remove companions who leave, die, or stay behind. Use when an ally is no longer traveling with the party.',
+        parameters: {
+          type: 'object',
+          properties: {
+            names: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Names of companions to remove (case-insensitive match)'
+            }
+          },
+          required: ['names']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'start_combat',
       description: 'Start structured combat. Provide a list of enemies with basic stats. The player character will be included automatically.',
       parameters: {
         type: 'object',
@@ -267,6 +321,28 @@ export const CHARACTER_TOOLS: Tool[] = [
           name: { type: 'string', description: 'Enemy name to search (e.g., "Goblin", "Bandit")' }
         },
         required: ['name']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'suggest_enemies',
+      description: 'Get CR-appropriate enemy suggestions for the party. Use this to find suitable enemies before introducing combat encounters. Returns a list of enemies that match the party level and difficulty.',
+      parameters: {
+        type: 'object',
+        properties: {
+          partyLevel: { type: 'number', description: 'Average level of the party' },
+          difficulty: { 
+            type: 'string', 
+            enum: ['easy', 'medium', 'hard', 'deadly'],
+            description: 'Desired encounter difficulty'
+          },
+          environment: { type: 'string', description: 'Optional: terrain/location (forest, dungeon, urban, mountains, etc.)' },
+          enemyType: { type: 'string', description: 'Optional: creature type filter (humanoid, beast, undead, dragon, etc.)' },
+          maxResults: { type: 'number', description: 'Max suggestions to return (default 5)' }
+        },
+        required: ['partyLevel']
       }
     }
   },
@@ -376,11 +452,13 @@ export const CHARACTER_TOOLS: Tool[] = [
  * Tool execution handler
  */
 export class ToolExecutor {
+  private campaignModel: CampaignModel;
   private characterModel: CharacterModel;
   private questModel: QuestModel;
   private worldModel: WorldEntityModel;
 
   constructor() {
+    this.campaignModel = new CampaignModel();
     this.characterModel = new CharacterModel();
     this.questModel = new QuestModel();
     this.worldModel = new WorldEntityModel();
@@ -444,12 +522,28 @@ export class ToolExecutor {
           result = await this.updateQuest(campaignId!, args);
           break;
 
+        case 'advance_time':
+          result = await this.advanceTime(campaignId!, args);
+          break;
+
+        case 'add_companions':
+          result = await this.addCompanions(campaignId!, args.companions);
+          break;
+
+        case 'remove_companions':
+          result = await this.removeCompanions(campaignId!, args.names);
+          break;
+
         case 'start_combat':
-          result = await this.startCombat(characterId, args.enemies);
+          result = await this.startCombat(characterId, campaignId!, args.enemies);
           break;
 
         case 'lookup_enemy':
           result = await this.lookupEnemy(args.name);
+          break;
+
+        case 'suggest_enemies':
+          result = await this.suggestEnemies(args);
           break;
 
         case 'upsert_world_entities':
@@ -543,6 +637,56 @@ export class ToolExecutor {
   }
 
   /**
+   * Suggest CR-appropriate enemies for the party
+   */
+  private async suggestEnemies(params: {
+    partyLevel: number;
+    difficulty?: 'easy' | 'medium' | 'hard' | 'deadly';
+    environment?: string;
+    enemyType?: string;
+    maxResults?: number;
+  }): Promise<any> {
+    try {
+      const suggestions = await suggestEnemies({
+        partyLevel: params.partyLevel,
+        difficulty: params.difficulty || 'medium',
+        environment: params.environment,
+        enemyType: params.enemyType,
+        maxResults: params.maxResults || 5,
+      });
+
+      if (suggestions.length === 0) {
+        return {
+          success: false,
+          message: 'No suitable enemies found for the specified criteria',
+          suggestions: [],
+        };
+      }
+
+      return {
+        success: true,
+        count: suggestions.length,
+        suggestions: suggestions.map(s => ({
+          name: s.name,
+          cr: s.cr,
+          type: s.type,
+          size: s.size,
+          ac: s.armor_class,
+          hp: s.hit_points,
+          environment: s.environment,
+        })),
+      };
+    } catch (error) {
+      logger.error('Enemy suggestion failed', error);
+      return {
+        success: false,
+        message: 'Failed to retrieve enemy suggestions',
+        suggestions: [],
+      };
+    }
+  }
+
+  /**
    * Upsert world entities in batch (locations, NPCs, shops, items)
    */
   private async upsertWorldEntities(
@@ -601,6 +745,146 @@ export class ToolExecutor {
     }
 
     return { success: true, ...results };
+  }
+
+  private async getCampaignSettings(campaignId: string): Promise<any> {
+    const campaign = await this.campaignModel.findById(campaignId);
+    return campaign?.settings || {};
+  }
+
+  /**
+   * Advance in-game time
+   */
+  private async advanceTime(
+    campaignId: string,
+    args: { hours?: number; minutes?: number; description?: string }
+  ): Promise<{ success: boolean; new_time: string; elapsed: string; time_of_day: string }> {
+    const settings = await this.getCampaignSettings(campaignId);
+    
+    // Initialize game time if not set (default: Day 1, 8:00 AM)
+    if (!settings.gameTime) {
+      settings.gameTime = {
+        day: 1,
+        hour: 8,
+        minute: 0,
+      };
+    }
+
+    const currentTime = settings.gameTime;
+    const hoursToAdd = (args.hours || 0) + (args.minutes || 0) / 60;
+    
+    // Calculate new time
+    let totalMinutes = currentTime.hour * 60 + currentTime.minute + hoursToAdd * 60;
+    let daysToAdd = Math.floor(totalMinutes / (24 * 60));
+    totalMinutes = totalMinutes % (24 * 60);
+    
+    const newDay = currentTime.day + daysToAdd;
+    const newHour = Math.floor(totalMinutes / 60);
+    const newMinute = Math.floor(totalMinutes % 60);
+
+    settings.gameTime = {
+      day: newDay,
+      hour: newHour,
+      minute: newMinute,
+    };
+
+    // Track time log for reference
+    if (!settings.timeLog) settings.timeLog = [];
+    if (args.description) {
+      settings.timeLog.push({
+        timestamp: new Date().toISOString(),
+        gameTime: `Day ${newDay}, ${String(newHour).padStart(2, '0')}:${String(newMinute).padStart(2, '0')}`,
+        elapsed: `${hoursToAdd.toFixed(1)}h`,
+        description: args.description,
+      });
+      // Keep only last 20 entries
+      if (settings.timeLog.length > 20) {
+        settings.timeLog = settings.timeLog.slice(-20);
+      }
+    }
+
+    await this.campaignModel.updateCampaign(campaignId, { settings });
+
+    const timeOfDay = newHour < 6 ? 'night' : newHour < 12 ? 'morning' : newHour < 18 ? 'afternoon' : newHour < 22 ? 'evening' : 'night';
+    
+    logger.info(`Time advanced: Day ${newDay}, ${String(newHour).padStart(2, '0')}:${String(newMinute).padStart(2, '0')} (${timeOfDay})`);
+
+    return {
+      success: true,
+      new_time: `Day ${newDay}, ${String(newHour).padStart(2, '0')}:${String(newMinute).padStart(2, '0')}`,
+      elapsed: `${hoursToAdd.toFixed(1)} hours`,
+      time_of_day: timeOfDay,
+    };
+  }
+
+  private generateCompanionId(name: string): string {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'ally';
+    return `companion:${slug}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private async addCompanions(
+    campaignId: string,
+    companions: Array<{ id?: string; name: string; role?: string; description?: string; hp?: number; maxHp?: number; ac?: number; dexterity?: number; notes?: string; status?: string; level?: number }>
+  ): Promise<{ success: boolean; added: string[]; updated: string[]; total: number }> {
+    const settings = await this.getCampaignSettings(campaignId);
+    const existing = Array.isArray(settings.companions) ? [...settings.companions] : [];
+    const added: string[] = [];
+    const updated: string[] = [];
+
+    for (const companion of companions || []) {
+      if (!companion.name || companion.name.trim().length === 0) {
+        continue;
+      }
+
+      const name = companion.name.trim();
+      const idx = existing.findIndex((c: any) => c.name?.toLowerCase() === name.toLowerCase());
+      const status = companion.status || (idx >= 0 ? existing[idx].status : undefined) || 'active';
+
+      if (idx >= 0) {
+        const id = existing[idx].id || companion.id || this.generateCompanionId(name);
+        existing[idx] = { ...existing[idx], ...companion, name, id, status };
+        updated.push(name);
+      } else {
+        const id = companion.id || this.generateCompanionId(name);
+        existing.push({ id, name, status, ...companion });
+        added.push(name);
+      }
+    }
+
+    settings.companions = existing;
+    await this.campaignModel.updateCampaign(campaignId, { settings });
+
+    return { success: true, added, updated, total: existing.length };
+  }
+
+  private async removeCompanions(
+    campaignId: string,
+    names: string[]
+  ): Promise<{ success: boolean; removed: string[]; not_found: string[]; total: number }> {
+    const settings = await this.getCampaignSettings(campaignId);
+    const existing = Array.isArray(settings.companions) ? [...settings.companions] : [];
+    const removed: string[] = [];
+    const notFound: string[] = [];
+
+    const toRemove = (names || []).map((n) => n.toLowerCase());
+    const remaining = existing.filter((c: any) => {
+      if (c.name && toRemove.includes(c.name.toLowerCase())) {
+        removed.push(c.name);
+        return false;
+      }
+      return true;
+    });
+
+    for (const name of names) {
+      if (!removed.find((r) => r.toLowerCase() === name.toLowerCase())) {
+        notFound.push(name);
+      }
+    }
+
+    settings.companions = remaining;
+    await this.campaignModel.updateCampaign(campaignId, { settings });
+
+    return { success: true, removed, not_found: notFound, total: remaining.length };
   }
 
   /**
@@ -899,10 +1183,15 @@ export class ToolExecutor {
    */
   private async startCombat(
     characterId: string,
+    campaignId: string,
     enemies: Array<{ name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; quantity?: number }>
   ): Promise<{ success: boolean; message: string; players: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; initiative: number }>; enemies: Array<{ id: string; name: string; hp: number; maxHp: number; ac: number; dexterity: number; level?: number; quantity?: number; initiative: number }> }> {
     const character = await this.characterModel.findById(characterId);
     if (!character) throw new Error('Character not found');
+
+    if (!campaignId) {
+      throw new Error('Campaign ID required to start combat');
+    }
 
     // Roll initiative for player
     const dexMod = Math.floor(((character.ability_scores?.dexterity ?? 10) - 10) / 2);
@@ -918,6 +1207,39 @@ export class ToolExecutor {
       level: character.level ?? undefined,
       initiative: playerInitiative,
     };
+
+    // Add active companions (status not inactive/benched) to player side
+    const settings = await this.getCampaignSettings(campaignId);
+    const companionsSetting = Array.isArray(settings.companions) ? settings.companions : [];
+    let settingsUpdated = false;
+    const companions = companionsSetting
+      .filter((c: any) => (c.status || 'active').toLowerCase() === 'active')
+      .map((c: any) => {
+        const id = c.id || this.generateCompanionId(c.name || 'ally');
+        if (!c.id) {
+          c.id = id;
+          settingsUpdated = true;
+        }
+        const dex = c.dexterity ?? 10;
+        const dexMod = Math.floor((dex - 10) / 2);
+        const initiative = Math.floor(Math.random() * 20) + 1 + dexMod;
+        const hp = c.hp ?? c.maxHp ?? 10;
+        const maxHp = c.maxHp ?? hp;
+        return {
+          id,
+          name: c.name,
+          hp,
+          maxHp,
+          ac: c.ac ?? 10,
+          dexterity: dex,
+          level: c.level,
+          initiative,
+        };
+      });
+
+    if (settingsUpdated) {
+      await this.campaignModel.updateCampaign(campaignId, { settings });
+    }
 
     const enemiesWithIds = enemies.map(e => {
       // Roll initiative for each enemy
@@ -935,7 +1257,7 @@ export class ToolExecutor {
     return {
       success: true,
       message: `Combat started vs ${enemies.map(e => e.name).join(', ')}`,
-      players: [player],
+      players: [player, ...companions],
       enemies: enemiesWithIds,
     };
   }

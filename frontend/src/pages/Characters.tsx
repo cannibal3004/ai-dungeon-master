@@ -21,6 +21,9 @@ export default function Characters() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [importUrl, setImportUrl] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState('');
   const [newCharacter, setNewCharacter] = useState({
     name: '',
     class: 'fighter',
@@ -88,6 +91,28 @@ export default function Characters() {
 
   const classes = ['fighter', 'wizard', 'rogue', 'cleric', 'ranger', 'paladin', 'barbarian', 'bard', 'druid', 'warlock'];
   const races = ['human', 'elf', 'dwarf', 'halfling', 'dragonborn', 'gnome', 'half-elf', 'half-orc', 'tiefling'];
+
+  const handleImport = async () => {
+    if (!importUrl.trim()) {
+      setImportError('Enter a D&D Beyond character URL.');
+      return;
+    }
+    try {
+      setImporting(true);
+      setImportError('');
+      await apiClient.post('/characters/import/ddb', {
+        campaignId,
+        url: importUrl.trim(),
+      });
+      setImportUrl('');
+      await fetchCharacters();
+    } catch (err: any) {
+      console.error('Import failed', err);
+      setImportError(err?.response?.data?.message || 'Import failed. Ensure the URL is correct and public.');
+    } finally {
+      setImporting(false);
+    }
+  };
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', color: '#111' }}>
@@ -252,6 +277,46 @@ export default function Characters() {
             </form>
           </div>
         )}
+
+        <div style={{
+          background: 'white',
+          padding: '1.5rem',
+          borderRadius: '8px',
+          marginBottom: '2rem',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+        }}>
+          <h3 style={{ marginBottom: '0.75rem', color: '#111' }}>Import from D&amp;D Beyond (URL)</h3>
+          <p style={{ marginBottom: '0.75rem', color: '#333', fontSize: '0.95rem' }}>
+            Paste a character URL like https://www.dndbeyond.com/characters/79230921. We'll fetch the JSON, create/update the character, and add combat/roleplay summaries.
+          </p>
+          <input
+            type="url"
+            value={importUrl}
+            onChange={(e) => setImportUrl(e.target.value)}
+            placeholder="https://www.dndbeyond.com/characters/1234567"
+            style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.95rem', marginBottom: '0.75rem' }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+            <button
+              type="button"
+              onClick={handleImport}
+              disabled={importing}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: importing ? '#9aa5f4' : '#667eea',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: importing ? 'wait' : 'pointer',
+                fontWeight: 'bold'
+              }}
+            >
+              {importing ? 'Importing…' : 'Import Character'}
+            </button>
+            {importError && <span style={{ color: '#c53030' }}>{importError}</span>}
+          </div>
+          <small style={{ color: '#555' }}>We only store the stats we need; your D&amp;D Beyond link is not saved.</small>
+        </div>
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: '2rem' }}>Loading characters...</div>

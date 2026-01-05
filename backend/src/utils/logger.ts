@@ -1,4 +1,6 @@
 import winston from 'winston';
+import path from 'path';
+import fs from 'fs';
 
 const logFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
@@ -21,5 +23,18 @@ export const logger = winston.createLogger({
         })
       ),
     }),
+    // UTF-8 file log to avoid Windows console codepage mangling of smart quotes/apostrophes
+    (() => {
+      const logDir = path.resolve(process.cwd(), 'logs');
+      if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
+      }
+      return new winston.transports.File({
+        filename: path.join(logDir, 'backend.log'),
+        level: process.env.LOG_LEVEL || 'info',
+        format: logFormat,
+        options: { flags: 'a', encoding: 'utf8' },
+      });
+    })(),
   ],
 });

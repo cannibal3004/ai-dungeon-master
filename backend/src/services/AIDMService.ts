@@ -223,15 +223,20 @@ export class AIDMService {
         }
       }
       
-      // Make a second LLM call with tool results to get the actual narrative
-      if (toolMessages.length > 0 && !response.content) {
+      // Make a second LLM call with tool results to reconcile stats and present clean narration
+      if (toolMessages.length > 0) {
         logger.info('Making second LLM call with tool results to generate narrative');
-        
-        // Build continuation prompt with tool results
-        const continuationPrompt = promptText + '\n\n[Tools executed: ' + toolResults.join('; ') + ']';
-        
+
+        // Build continuation prompt with tool results and the draft (if any)
+        const reconciliationPrompt = `${promptText}
+
+The following tools were executed; use THEIR RESULTS as the source of truth for mechanics (HP/AC/items/gold/XP/enemy stats/turn order). Rewrite the DM response concisely in-world (no bullet lists), and keep it TTS-friendly (avoid markdown lists/headings unless necessary). If combat started, state enemy stats from the tool results, not guesses.
+Tool results: ${toolResults.join('; ')}
+
+Draft (may be inconsistent, fix it): ${response.content || '[no draft provided]'}`;
+
         const secondResponse = await this.llmManager.generateCompletion(
-          continuationPrompt,
+          reconciliationPrompt,
           {
             maxTokens: 4000, // Increased for gpt-5 models which need more output tokens
             temperature: 0.8,
@@ -243,7 +248,7 @@ export class AIDMService {
           },
           narrativeCfg.provider
         );
-        
+
         finalNarrative = secondResponse.content;
         logger.info('Second LLM call generated narrative', { contentLength: finalNarrative.length });
       }
@@ -519,10 +524,27 @@ export class AIDMService {
       }
     }
 
+    const companions = Array.isArray(settings.companions) ? settings.companions : [];
+    const characterSummaries = Array.isArray(settings.characterSummaries) ? settings.characterSummaries : [];
+    
+    // Extract game time if available
+    let gameTime: DMContext['gameTime'] = undefined;
+    if (settings.gameTime) {
+      const hour = settings.gameTime.hour ?? 8;
+      const timeOfDay = hour < 6 ? 'night' : hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : hour < 22 ? 'evening' : 'night';
+      gameTime = {
+        day: settings.gameTime.day ?? 1,
+        hour,
+        minute: settings.gameTime.minute ?? 0,
+        timeOfDay,
+      };
+    }
+
     return {
       campaignId,
       campaignName,
       campaignDescription,
+      gameTime,
       currentLocation,
       currentLocationDescription: currentLocationData?.description,
       currentLocationType: currentLocationData?.type,
@@ -558,6 +580,8 @@ export class AIDMService {
         objectives: q.objectives,
         rewards: q.rewards,
       })),
+      companions,
+      characterSummaries,
       sessionSummary: settings.lastSummary,
       knownLocations: locations.map(l => ({ name: l.name, type: l.type || '' })),
       knownNPCs: npcs.map(n => {

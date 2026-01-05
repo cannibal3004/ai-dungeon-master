@@ -7,8 +7,8 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'migrate', 'reset-db', 'test', 'clear-logs', 'build')]
-    [string]$Action = 'status',
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'migrate', 'reset-db', 'test', 'clear-logs', 'build', 'help', '/help', 'h', '--help')]
+    [string]$Action,
     
     [Parameter()]
     [ValidateSet('all', 'backend', 'frontend', 'postgres', 'redis')]
@@ -153,45 +153,54 @@ function Show-Status {
     Write-Host "===================================================" -ForegroundColor Cyan
     Write-Host ""
     
-    # Check backend
-    $backendProc = Get-PortProcess -Port $BackendPort
-    Write-Host "Backend (Port $BackendPort):  " -NoNewline -ForegroundColor Yellow
-    if ($backendProc) {
-        Write-Host "RUNNING (PID: $($backendProc.Id))" -ForegroundColor Green
-        Write-Host "  -> http://localhost:$BackendPort" -ForegroundColor Gray
-    } else {
-        Write-Host "STOPPED" -ForegroundColor Red
+    if ($Target -eq 'all' -or $Target -eq 'backend') {
+        # Check backend
+        $backendProc = Get-PortProcess -Port $BackendPort
+        Write-Host "Backend (Port $BackendPort):  " -NoNewline -ForegroundColor Yellow
+        if ($backendProc) {
+            Write-Host "RUNNING (PID: $($backendProc.Id))" -ForegroundColor Green
+            Write-Host "  -> http://localhost:$BackendPort" -ForegroundColor Gray
+        } else {
+            Write-Host "STOPPED" -ForegroundColor Red
+        }
+        Write-Host ""
     }
-    Write-Host ""
-    
-    # Check frontend
-    $frontendProc = Get-PortProcess -Port $FrontendPort
-    Write-Host "Frontend (Port $FrontendPort): " -NoNewline -ForegroundColor Yellow
-    if ($frontendProc) {
-        Write-Host "RUNNING (PID: $($frontendProc.Id))" -ForegroundColor Green
-        Write-Host "  -> http://localhost:$FrontendPort" -ForegroundColor Gray
-    } else {
-        Write-Host "STOPPED" -ForegroundColor Red
+    if ($Target -eq 'all' -or $Target -eq 'frontend') {
+        # Check frontend
+        $frontendProc = Get-PortProcess -Port $FrontendPort
+        Write-Host "Frontend (Port $FrontendPort): " -NoNewline -ForegroundColor Yellow
+        if ($frontendProc) {
+            Write-Host "RUNNING (PID: $($frontendProc.Id))" -ForegroundColor Green
+            Write-Host "  -> http://localhost:$FrontendPort" -ForegroundColor Gray
+        } else {
+            Write-Host "STOPPED" -ForegroundColor Red
+        }
+        Write-Host ""
     }
-    Write-Host ""
-    # Check PostgreSQL
-    Write-Host "PostgreSQL:           " -NoNewline -ForegroundColor Yellow
-    if (docker ps -q --filter "name=aidm_postgres") {
-        Write-Host "RUNNING" -ForegroundColor Green
-        Write-Host "  -> TCP localhost:$PostgresPort" -ForegroundColor Gray
-    } else {
-        Write-Host "STOPPED" -ForegroundColor Red
+
+    if ($Target -eq 'all' -or $Target -eq 'postgres') {
+        # Check PostgreSQL
+        Write-Host "PostgreSQL:           " -NoNewline -ForegroundColor Yellow
+        if (docker ps -q --filter "name=aidm_postgres") {
+            Write-Host "RUNNING" -ForegroundColor Green
+            Write-Host "  -> TCP localhost:$PostgresPort" -ForegroundColor Gray
+        } else {
+            Write-Host "STOPPED" -ForegroundColor Red
+        }
+        Write-Host ""
     }
-    Write-Host ""
-    # Check Redis
-    Write-Host "Redis:                " -NoNewline -ForegroundColor Yellow
-    if (docker ps -q --filter "name=aidm_redis") {
-        Write-Host "RUNNING" -ForegroundColor Green
-        Write-Host "  -> TCP localhost:$RedisPort" -ForegroundColor Gray
-    } else {
-        Write-Host "STOPPED" -ForegroundColor Red
+
+    if ($Target -eq 'all' -or $Target -eq 'redis') {
+        # Check Redis
+        Write-Host "Redis:                " -NoNewline -ForegroundColor Yellow
+        if (docker ps -q --filter "name=aidm_redis") {
+            Write-Host "RUNNING" -ForegroundColor Green
+            Write-Host "  -> TCP localhost:$RedisPort" -ForegroundColor Gray
+        } else {
+            Write-Host "STOPPED" -ForegroundColor Red
+        }
+        Write-Host ""
     }
-    Write-Host ""
 }
 
 function Show-Logs {
@@ -465,6 +474,32 @@ function Reset-Database {
     }
 }
 
+function Display-Help {
+    Write-Host ""
+    Write-Host "AIDungeonMaster Development Server Management Script" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Usage: .\dev.ps1 [Action] [-Target Service] [-Follow] [-Yes] [-Lines N]"
+    Write-Host ""
+    Write-Host "Actions:"
+    Write-Host "  start         Start the specified service(s) (default: all)"
+    Write-Host "  stop          Stop the specified service(s) (default: all)"
+    Write-Host "  restart       Restart the specified service(s) (default: all)"
+    Write-Host "  status        Show the status of the services"
+    Write-Host "  logs          Show logs for the specified service(s)"
+    Write-Host "  migrate       Run database migrations"
+    Write-Host "  reset-db      Reset the database (DANGER: deletes all data)"
+    Write-Host "  test          Run tests for the specified service(s)"
+    Write-Host "  clear-logs    Clear logs for the specified service(s)"
+    Write-Host "  build         Build projects for the specified service(s)"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -Target       Specify target service: all, backend, frontend, postgres, redis (default: all)"
+    Write-Host "  -Follow       Follow logs output (only for 'logs' action)"
+    Write-Host "  -Yes          Auto-confirm prompts (use with caution!)"
+    Write-Host "  -Lines N      Number of log lines to show (default: 50)"
+    Write-Host ""
+}
+
 # Main execution
 switch ($Action) {
     'start' {
@@ -547,31 +582,25 @@ switch ($Action) {
         
         Write-Host "Build process completed." -ForegroundColor Green
     }   
-    default {
-        Write-Host "===================================================" -ForegroundColor DarkGray
-        Write-Host "Usage: dev.ps1 [action] [-Target service]" -ForegroundColor Gray
+    'help' {
+        Display-Help
+    }
+    '/h' {
+        Display-Help
+    }
+    'h' {
+        Display-Help
+    }
+    '--help' {
+        Display-Help
+    }
+    '' {
+        Display-Help
+    }
+    Default {
         Write-Host ""
-        Write-Host "Actions:" -ForegroundColor White
-        Write-Host "  start       - Start dev servers" -ForegroundColor Gray
-        Write-Host "  stop        - Stop dev servers" -ForegroundColor Gray
-        Write-Host "  restart     - Restart dev servers" -ForegroundColor Gray
-        Write-Host "  migrate     - Run database migrations" -ForegroundColor Gray
-        Write-Host "  reset-db    - Drop all tables and recreate (DESTRUCTIVE!)" -ForegroundColor Gray
-        Write-Host "  test        - Run backend/frontend tests (Jest + Playwright)" -ForegroundColor Gray
-        Write-Host "  logs        - View server logs (tails last 50 lines)" -ForegroundColor Gray
-        Write-Host "  clear-logs  - Clear log files" -ForegroundColor Gray
-        Write-Host "  status      - Show server status (default)" -ForegroundColor Gray
-        Write-Host "  build       - Build backend and frontend projects" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "Targets: all (default), backend, frontend, redis, postgres" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "Examples:" -ForegroundColor White
-        Write-Host "  dev.ps1 start                    # Start all servers" -ForegroundColor Gray
-        Write-Host "  dev.ps1 test                     # Run all tests" -ForegroundColor Gray
-        Write-Host "  dev.ps1 test -Target backend     # Run backend tests only" -ForegroundColor Gray
-        Write-Host "  dev.ps1 logs -Target backend     # Show backend logs" -ForegroundColor Gray
-        Write-Host "  Get-Content logs\backend.log     # View full log file" -ForegroundColor Gray
-        Write-Host ""
+        Write-Host "Unknown action: $Action" -ForegroundColor Red
+        Display-Help
     }
 }
 

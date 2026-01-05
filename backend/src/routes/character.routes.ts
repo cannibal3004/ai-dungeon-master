@@ -9,6 +9,7 @@ router.use(authenticate);
 
 router.get('/my', CharacterController.getMyCharacters);
 router.post('/', CharacterController.createCharacter);
+router.post('/import/ddb', CharacterController.importFromDDB);
 router.get('/:id', CharacterController.getCharacter);
 router.put('/:id', CharacterController.updateCharacter);
 router.post('/:id/level-up', CharacterController.levelUpCharacter);
