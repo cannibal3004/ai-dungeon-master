@@ -97,10 +97,10 @@ export class LLMManager {
           logger.info('Local LLM (OpenAI-compatible) initialized');
           break;
         case 'llamacpp':
-          // Many llama.cpp servers expose OpenAI-compatible APIs; default to LocalAI provider
+          // Many llama.cpp servers expose OpenAI-compatible APIs; register as 'llamacpp'
           {
             const model = process.env.LOCALAI_DEFAULT_MODEL || 'gpt-3.5-turbo';
-            this.providers.set('localai', new LocalAIProvider(localUrl, model));
+            this.providers.set('llamacpp', new LocalAIProvider(localUrl, model));
           }
           logger.info('Local LLM (llamacpp via OpenAI-compatible) initialized');
           break;

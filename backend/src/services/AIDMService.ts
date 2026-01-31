@@ -21,7 +21,7 @@ import { AppError } from '../middleware/errorHandler';
 import { WorldEntityModel } from '../models/WorldEntity';
 import { QuestModel } from '../models/Quest';
 import { CHARACTER_TOOLS, ToolExecutor } from './tools';
-import { TTSService } from './TTSService';
+import { TTSService, getTTSService } from './TTSService';
 import { AudioFXService } from './AudioFXService';
 
 export interface NPCState {
@@ -50,7 +50,7 @@ export class AIDMService {
     this.worldEntityModel = new WorldEntityModel();
     this.questModel = new QuestModel();
     this.toolExecutor = new ToolExecutor();
-    this.ttsService = new TTSService();
+    this.ttsService = getTTSService();
     this.audioFxService = new AudioFXService();
     // Initialize redis if available
     (async () => {
@@ -646,6 +646,7 @@ Draft (may be inconsistent, fix it): ${response.content || '[no draft provided]'
       }
 
       const combatData = JSON.parse(cached);
+      const battlefield = combatData.battlefield;
       
       return {
         isActive: true,
@@ -659,6 +660,13 @@ Draft (may be inconsistent, fix it): ${response.content || '[no draft provided]'
           maxHp: c.maxHp,
           initiative: c.initiative || 0,
         })),
+        battlefield: battlefield
+          ? {
+              zones: Array.isArray(battlefield.zones) ? battlefield.zones : [],
+              positions: battlefield.positions || {},
+              engagements: Array.isArray(battlefield.engagements) ? battlefield.engagements : [],
+            }
+          : undefined,
       };
     } catch (err) {
       logger.warn('Failed to get combat state', err);
@@ -708,6 +716,53 @@ Draft (may be inconsistent, fix it): ${response.content || '[no draft provided]'
         metadata ? JSON.stringify(metadata) : '{}'
       ]
     );
+  }
+
+  /**
+   * Update the audioUrl in a chat message's metadata
+   */
+  async updateChatMessageAudioUrl(
+    campaignId: string,
+    content: string,
+    audioUrl: string
+  ): Promise<void> {
+    const sessionId = await this.getActiveSessionId(campaignId);
+    if (!sessionId) {
+      logger.warn('Cannot update audio URL: no active session');
+      return;
+    }
+
+    try {
+      const result = await this.pool.query(
+        `UPDATE chat_history
+         SET metadata = jsonb_set(
+           COALESCE(metadata, '{}'::jsonb),
+           '{audioUrl}',
+           $1::jsonb
+         )
+         WHERE session_id = $2 
+         AND content = $3 
+         AND sender = 'dm'
+         ORDER BY timestamp DESC
+         LIMIT 1`,
+        [JSON.stringify(audioUrl), sessionId, content]
+      );
+      
+      if (result.rowCount && result.rowCount > 0) {
+        logger.info('Updated chat message with audio URL', { 
+          sessionId, 
+          audioUrl,
+          contentPreview: content.substring(0, 50)
+        });
+      } else {
+        logger.warn('No chat message found to update with audio URL', {
+          sessionId,
+          contentPreview: content.substring(0, 50)
+        });
+      }
+    } catch (err) {
+      logger.error('Failed to update chat message audio URL:', err);
+    }
   }
 
   /**

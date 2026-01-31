@@ -90,6 +90,44 @@ interface Quest {
   notes?: string;
 }
 
+type BattlefieldZone = {
+  id: string;
+  name: string;
+  description?: string;
+  adjacentTo?: string[];
+  cover?: 'none' | 'light' | 'heavy';
+  elevation?: 'low' | 'high';
+  terrain?: 'normal' | 'difficult';
+  hazards?: string;
+  lighting?: string;
+};
+
+type BattlefieldState = {
+  zones: BattlefieldZone[];
+  positions: Record<string, string>;
+  engagements: Array<{ a: string; b: string }>;
+};
+
+type CombatantView = {
+  id: string;
+  name: string;
+  hp: number;
+  maxHp: number;
+  ac: number;
+  initiative: number;
+  isPlayer: boolean;
+  type?: 'player' | 'enemy';
+  level?: number;
+  quantity?: number;
+};
+
+type CombatState = {
+  round: number;
+  currentTurnIndex: number;
+  turnOrder: CombatantView[];
+  battlefield?: BattlefieldState;
+};
+
 export default function Game() {
   const { campaignId, sessionId, characterId } = useParams<{
     campaignId: string;
@@ -117,7 +155,7 @@ export default function Game() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'reconnecting' | 'disconnected'>('connecting');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
-  const [combatState, setCombatState] = useState<any | null>(null);
+  const [combatState, setCombatState] = useState<CombatState | null>(null);
   const [enemyInfo, setEnemyInfo] = useState<any[]>([]);
   const [expandedEnemies, setExpandedEnemies] = useState<Record<number, boolean>>({});
   const [showSaveMenu, setShowSaveMenu] = useState(false);
@@ -374,6 +412,7 @@ export default function Game() {
       enemyInfo?: any[];
       audioUrl?: string;
       ambienceUrl?: string;
+      combatState?: CombatState;
     }) => {
       addMessage('narrative', data.narrative, data.audioUrl);
       // Apply inventory changes if they're for this character
@@ -403,6 +442,9 @@ export default function Game() {
           playAmbience(resolved);
         }
       }
+      if (data.combatState) {
+        setCombatState(data.combatState);
+      }
       // Refresh world entities since DM may have mentioned new ones
       fetchWorldEntities();
       // Refresh character in case HP/XP/Gold changed via tools
@@ -416,6 +458,7 @@ export default function Game() {
         round: data.round,
         currentTurnIndex: data.currentTurnIndex,
         turnOrder: data.turnOrder,
+        battlefield: data.battlefield,
       });
     });
 
@@ -467,20 +510,47 @@ export default function Game() {
       if (data.campaignId === campaignId) {
         console.log('[Audio] TTS ready:', data.audioUrl);
         setLastAudioUrl(data.audioUrl);
-        // Update the last narrative message with the audio URL
-        setMessages((prev) => {
-          const lastNarrative = [...prev].reverse().find(m => m.type === 'narrative' && !m.audioUrl);
-          if (lastNarrative) {
-            return prev.map(m => m.id === lastNarrative.id ? { ...m, audioUrl: data.audioUrl } : m);
+        
+        // Resolve stream URLs to cached paths for persistence
+        resolveCachedAudioUrl(data.audioUrl).then((cachedUrl) => {
+          // Update the last narrative message with the resolved audio URL
+          setMessages((prev) => {
+            const lastNarrative = [...prev].reverse().find(m => m.type === 'narrative' && !m.audioUrl);
+            if (lastNarrative) {
+              // Emit to backend to persist cached URL in database
+              socket.emit('game:audio-cache-resolved', {
+                campaignId,
+                narrativeContent: lastNarrative.content,
+                cachedUrl,
+              });
+              return prev.map(m => m.id === lastNarrative.id ? { ...m, audioUrl: cachedUrl } : m);
+            }
+            return prev;
+          });
+          
+          // Auto-play if TTS is enabled
+          if (ttsEnabledRef.current) {
+            console.log('[Audio] Auto-playing TTS');
+            unlockAudio();
+            playAudioWithAutoplay(cachedUrl);
           }
-          return prev;
+        }).catch(err => {
+          console.warn('[Audio] Failed to resolve cached URL, using original:', err);
+          // Fallback: use original URL and auto-play
+          setMessages((prev) => {
+            const lastNarrative = [...prev].reverse().find(m => m.type === 'narrative' && !m.audioUrl);
+            if (lastNarrative) {
+              return prev.map(m => m.id === lastNarrative.id ? { ...m, audioUrl: data.audioUrl } : m);
+            }
+            return prev;
+          });
+          
+          if (ttsEnabledRef.current) {
+            console.log('[Audio] Auto-playing TTS');
+            unlockAudio();
+            playAudioWithAutoplay(data.audioUrl);
+          }
         });
-        // Auto-play if TTS is enabled
-        if (ttsEnabledRef.current) {
-          console.log('[Audio] Auto-playing TTS');
-          unlockAudio();
-          playAudioWithAutoplay(data.audioUrl);
-        }
       }
     });
 
@@ -639,6 +709,25 @@ export default function Game() {
     if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
     const origin = window?.location?.origin || '';
     return url.startsWith('/') ? `${origin}${url}` : `${origin}/${url}`;
+  };
+
+  // Resolve stream URLs to their cached paths for persistent playback across refreshes
+  const resolveCachedAudioUrl = async (url: string): Promise<string> => {
+    const resolved = resolveAudioUrl(url);
+    if (resolved.includes('/audio/stream/')) {
+      try {
+        const headResp = await fetch(resolved, { method: 'HEAD' });
+        const cachedPath = headResp.headers.get('X-Audio-Cache-Path');
+        if (cachedPath) {
+          const cachedResolved = resolveAudioUrl(cachedPath);
+          console.log('[Audio] Resolved streaming URL to cached path:', cachedResolved);
+          return cachedResolved;
+        }
+      } catch (err) {
+        console.warn('[Audio] Failed to resolve cached path:', err);
+      }
+    }
+    return resolved;
   };
 
   const playAudio = async (url?: string) => {
@@ -882,6 +971,7 @@ export default function Game() {
           campaignId,
           action,
           characterId,
+          ttsEnabled: ttsEnabledRef.current,
         });
       } else {
         const response = await apiClient.post(`/dm/narrative`, {
@@ -913,6 +1003,7 @@ export default function Game() {
           campaignId,
           action: 'Start the adventure',
           characterId,
+          ttsEnabled: ttsEnabledRef.current,
         });
       } else {
         const response = await apiClient.post(`/dm/narrative`, {
@@ -1725,6 +1816,7 @@ export default function Game() {
             socket={socketRef.current}
             combatState={combatState}
             currentCharacter={character}
+            ttsEnabled={ttsEnabledRef.current}
           />
 
           {/* Enemy Info Panel */}

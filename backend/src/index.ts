@@ -58,6 +58,97 @@ const audioPath = path.resolve(__dirname, '..', 'audio');
 try { fs.mkdirSync(audioPath, { recursive: true }); } catch {}
 app.use('/audio', express.static(audioPath));
 
+// Streaming audio proxy for TTS
+import { getTTSService } from './services/TTSService';
+
+// HEAD: expose cache path without consuming token
+app.head('/audio/stream/:token', async (req, res, next): Promise<void> => {
+  try {
+    const ttsService = getTTSService();
+    const { token } = req.params;
+    const tokenData = ttsService.peekStreamToken(token);
+    if (!tokenData) {
+      res.status(404).end();
+      return;
+    }
+    const cachePath = `/audio/${tokenData.sessionId}/${tokenData.cacheFilename}`;
+    res.setHeader('X-Audio-Cache-Path', cachePath);
+    res.status(200).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/audio/stream/:token', async (req, res, next): Promise<void> => {
+  try {
+    const ttsService = getTTSService();
+    const { token } = req.params;
+    logger.info('[Audio] Stream token request', { token, availableTokens: (ttsService as any).pendingStreams?.size });
+    const tokenData = ttsService.consumeStreamToken(token);
+    if (!tokenData) {
+      logger.warn('[Audio] Token not found', { token });
+      res.status(404).json({ error: 'Invalid or expired stream token' });
+      return;
+    }
+
+    logger.info('[Audio] Token consumed, streaming', { token, sessionId: tokenData.sessionId, cacheFilename: tokenData.cacheFilename });
+    const result = await ttsService.streamAudioDirect(tokenData.sessionId, tokenData.text, tokenData.cacheFilename);
+    if (!result) {
+      logger.error('[Audio] Failed to stream audio');
+      res.status(500).json({ error: 'Failed to stream audio' });
+      return;
+    }
+
+    // Set headers for streaming without Content-Length
+    const contentTypeMap: Record<string, string> = {
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'pcm': 'audio/wave',
+    };
+    res.setHeader('Content-Type', contentTypeMap[result.format] || 'audio/wav');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-store');
+    res.removeHeader('Content-Length');
+    
+    // Send cached filename so client can use it for replay
+    if (result.cacheFilename) {
+      const cachePath = `/audio/${tokenData.sessionId}/${result.cacheFilename}`;
+      res.setHeader('X-Audio-Cache-Path', cachePath);
+    }
+
+    let sentBytes = 0;
+    let sentChunks = 0;
+    result.stream.on('data', (chunk: Buffer) => {
+      sentChunks += 1;
+      sentBytes += chunk.length;
+      if (sentChunks === 1 || sentChunks % 10 === 0) {
+        logger.info('[Audio] Streaming to client', { token, sentChunks, sentBytes });
+      }
+    });
+
+    res.on('close', () => {
+      logger.info('[Audio] Client closed stream', { token, sentChunks, sentBytes });
+    });
+
+    res.on('finish', () => {
+      logger.info('[Audio] Stream finished to client', { token, sentChunks, sentBytes, cacheFilename: result.cacheFilename });
+    });
+
+    result.stream.pipe(res);
+
+    result.stream.on('error', (err: any) => {
+      logger.error('[Audio] Stream error', { error: err.message });
+      if (!res.headersSent) {
+        res.status(500).end();
+      } else {
+        res.end();
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -10,6 +10,24 @@ import { WorldEntityModel } from '../models/WorldEntity';
 import { logger } from '../utils/logger';
 import { suggestEnemies } from './enemySuggestions';
 
+type BattlefieldZone = {
+  id: string;
+  name: string;
+  description?: string;
+  adjacentTo?: string[];
+  cover?: 'none' | 'light' | 'heavy';
+  elevation?: 'low' | 'high';
+  terrain?: 'normal' | 'difficult';
+  hazards?: string;
+  lighting?: string;
+};
+
+type BattlefieldState = {
+  zones: BattlefieldZone[];
+  positions: Record<string, string>;
+  engagements: Array<{ a: string; b: string }>;
+};
+
 export interface Tool {
   type: 'function';
   function: {
@@ -308,8 +326,72 @@ export const CHARACTER_TOOLS: Tool[] = [
         required: ['enemies']
       }
     }
-  }
-  ,
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_battlefield',
+      description: 'Define the combat battlefield using a small set of named zones with adjacency and features. Call this at combat start or when the layout changes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          zones: {
+            type: 'array',
+            description: '4-8 concise zones with adjacency and terrain/cover tags',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Stable zone id (optional, auto-generated if omitted)' },
+                name: { type: 'string', description: 'Zone name (e.g., North Ledge, Hall Center)' },
+                description: { type: 'string', description: 'Short flavor/feature note' },
+                adjacentTo: { type: 'array', items: { type: 'string' }, description: 'Zone ids this zone connects to' },
+                cover: { type: 'string', enum: ['none','light','heavy'], description: 'Cover quality in this zone' },
+                elevation: { type: 'string', enum: ['low','high'], description: 'Elevation tag' },
+                terrain: { type: 'string', enum: ['normal','difficult'], description: 'Movement difficulty' },
+                hazards: { type: 'string', description: 'Any hazards/traps/effects here' },
+                lighting: { type: 'string', description: 'Lighting note if relevant' }
+              },
+              required: ['name']
+            }
+          },
+          positions: {
+            type: 'object',
+            description: 'Optional initial placements: map combatantId -> zoneId',
+            additionalProperties: { type: 'string' }
+          },
+          engagements: {
+            type: 'array',
+            description: 'Optional engaged pairs (melee-locked)',
+            items: {
+              type: 'object',
+              properties: {
+                a: { type: 'string', description: 'Combatant id' },
+                b: { type: 'string', description: 'Combatant id' }
+              },
+              required: ['a','b']
+            }
+          }
+        },
+        required: ['zones']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'move_combatant',
+      description: 'Move a combatant to an adjacent zone on the battlefield. Enforce adjacency; require disengage when leaving engagement.',
+      parameters: {
+        type: 'object',
+        properties: {
+          combatantId: { type: 'string', description: 'ID of the moving combatant' },
+          toZoneId: { type: 'string', description: 'Destination zone id (must be adjacent)' },
+          disengage: { type: 'boolean', description: 'True if taking Disengage/withdraw to leave engagement safely' }
+        },
+        required: ['combatantId','toZoneId']
+      }
+    }
+  },
   {
     type: 'function',
     function: {
@@ -536,6 +618,14 @@ export class ToolExecutor {
 
         case 'start_combat':
           result = await this.startCombat(characterId, campaignId!, args.enemies);
+          break;
+
+        case 'set_battlefield':
+          result = await this.setBattlefield(campaignId!, args);
+          break;
+
+        case 'move_combatant':
+          result = await this.moveCombatant(campaignId!, args.combatantId, args.toZoneId, args.disengage);
           break;
 
         case 'lookup_enemy':
@@ -1254,6 +1344,65 @@ export class ToolExecutor {
       };
     });
 
+    const sessionId = await this.getSessionIdForCombat(campaignId);
+    if (!sessionId) {
+      return {
+        success: false,
+        message: 'No active session found for combat. Start a session before initiating combat.',
+        players: [player, ...companions],
+        enemies: enemiesWithIds,
+      };
+    }
+
+    const turnOrder = [...[player, ...companions].map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: 'player',
+      hp: p.hp,
+      maxHp: p.maxHp,
+      ac: p.ac,
+      dexterity: p.dexterity,
+      initiative: p.initiative,
+      level: p.level,
+      quantity: p.quantity,
+    })), ...enemiesWithIds.map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: 'enemy',
+      hp: e.hp,
+      maxHp: e.maxHp,
+      ac: e.ac,
+      dexterity: e.dexterity,
+      initiative: e.initiative,
+      level: e.level,
+      quantity: e.quantity,
+    }))];
+
+    turnOrder.sort((a, b) => {
+      if (b.initiative !== a.initiative) return b.initiative - a.initiative;
+      if (b.dexterity !== a.dexterity) return b.dexterity - a.dexterity;
+      return Math.random() - 0.5;
+    });
+
+    const combatState = {
+      round: 1,
+      turnOrder,
+      currentTurnIndex: 0,
+      active: true,
+    };
+
+    try {
+      await this.saveCombatState(sessionId, combatState);
+    } catch (err) {
+      logger.error('Failed to persist combat state', err);
+      return {
+        success: false,
+        message: 'Combat could not be started because state persistence failed.',
+        players: [player, ...companions],
+        enemies: enemiesWithIds,
+      };
+    }
+
     return {
       success: true,
       message: `Combat started vs ${enemies.map(e => e.name).join(', ')}`,
@@ -1298,128 +1447,288 @@ export class ToolExecutor {
     });
   }
 
+  private slugifyId(value: string, fallbackPrefix: string): string {
+    const base = value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+      .slice(0, 40);
+    const core = base || fallbackPrefix;
+    return `${core}-${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  private normalizeBattlefieldZones(zones: Array<Partial<BattlefieldZone>>): BattlefieldZone[] {
+    const seen = new Set<string>();
+    return (zones || []).map((zone, idx) => {
+      const idFromZone = (zone.id || '').trim();
+      let id = idFromZone.length > 0 ? idFromZone : this.slugifyId(zone.name || `zone-${idx + 1}`, 'zone');
+      while (seen.has(id)) {
+        id = `${id}-${Math.random().toString(36).slice(2, 4)}`;
+      }
+      seen.add(id);
+
+      return {
+        id,
+        name: (zone.name || `Zone ${idx + 1}`).trim(),
+        description: zone.description || undefined,
+        adjacentTo: Array.isArray(zone.adjacentTo) ? Array.from(new Set(zone.adjacentTo.filter(Boolean))) : [],
+        cover: zone.cover === 'light' || zone.cover === 'heavy' ? zone.cover : 'none',
+        elevation: zone.elevation === 'high' ? 'high' : 'low',
+        terrain: zone.terrain === 'difficult' ? 'difficult' : 'normal',
+        hazards: zone.hazards || undefined,
+        lighting: zone.lighting || undefined,
+      };
+    });
+  }
+
+  private async getSessionIdForCombat(campaignId: string): Promise<string | null> {
+    const pool = (await import('../utils/database')).getDatabase();
+    const queries = [
+      { sql: 'SELECT id FROM game_sessions WHERE campaign_id = $1 AND state = $2 ORDER BY last_activity DESC LIMIT 1', params: [campaignId, 'active'] },
+      { sql: 'SELECT id FROM sessions WHERE campaign_id = $1 AND state = $2 ORDER BY last_activity DESC LIMIT 1', params: [campaignId, 'active'] },
+      { sql: 'SELECT id FROM sessions WHERE campaign_id = $1 ORDER BY started_at DESC LIMIT 1', params: [campaignId] },
+      { sql: 'SELECT id FROM game_sessions WHERE campaign_id = $1 ORDER BY last_activity DESC LIMIT 1', params: [campaignId] },
+    ];
+
+    for (const query of queries) {
+      try {
+        const res = await pool.query(query.sql, query.params);
+        if (res.rows.length > 0) {
+          return res.rows[0].id as string;
+        }
+      } catch (err) {
+        logger.warn('Session lookup failed', err);
+      }
+    }
+    return null;
+  }
+
+  private async loadCombatState(campaignId: string): Promise<{ sessionId: string; combatState: any; combatKey: string; redis: any }> {
+    const sessionId = await this.getSessionIdForCombat(campaignId);
+    if (!sessionId) {
+      throw new Error('No active session found for combat');
+    }
+
+    const redis = (await import('../utils/redis')).getRedis();
+    if (!redis) {
+      throw new Error('Combat system not available');
+    }
+
+    const combatKey = `combat:${sessionId}`;
+    const cached = await redis.get(combatKey);
+    const combatState = cached ? JSON.parse(cached) : null;
+    return { sessionId, combatState, combatKey, redis };
+  }
+
+  private async saveCombatState(sessionId: string, combatState: any): Promise<void> {
+    const redis = (await import('../utils/redis')).getRedis();
+    if (!redis) {
+      throw new Error('Combat system not available');
+    }
+    const combatKey = `combat:${sessionId}`;
+    await redis.set(combatKey, JSON.stringify(combatState), 'EX', 3600);
+  }
+
+  private async setBattlefield(
+    campaignId: string,
+    args: { zones: Array<Partial<BattlefieldZone>>; positions?: Record<string, string>; engagements?: Array<{ a: string; b: string }> }
+  ): Promise<{ success: boolean; message: string; battlefield?: BattlefieldState }> {
+    const { combatState, sessionId } = await this.loadCombatState(campaignId);
+
+    if (!combatState || !combatState.turnOrder) {
+      return { success: false, message: 'No active combat to attach a battlefield.' };
+    }
+
+    const zones = this.normalizeBattlefieldZones(args.zones || []);
+    if (zones.length === 0) {
+      return { success: false, message: 'Provide at least one zone to define the battlefield.' };
+    }
+
+    const allowedZoneIds = new Set(zones.map((z) => z.id));
+    const nextPositions: Record<string, string> = {};
+
+    if (args.positions && typeof args.positions === 'object') {
+      for (const [combatantId, zoneId] of Object.entries(args.positions)) {
+        const zoneIdStr = typeof zoneId === 'string' ? zoneId : String(zoneId ?? '');
+        if (allowedZoneIds.has(zoneIdStr)) {
+          nextPositions[String(combatantId)] = zoneIdStr;
+        }
+      }
+    } else if (combatState.battlefield?.positions) {
+      for (const [combatantId, zoneId] of Object.entries(combatState.battlefield.positions)) {
+        const zoneIdStr = typeof zoneId === 'string' ? zoneId : String(zoneId ?? '');
+        if (allowedZoneIds.has(zoneIdStr)) {
+          nextPositions[String(combatantId)] = zoneIdStr;
+        }
+      }
+    }
+
+    const engagements = Array.isArray(args.engagements)
+      ? args.engagements.filter((pair) => pair && pair.a && pair.b)
+      : combatState.battlefield?.engagements || [];
+
+    combatState.battlefield = {
+      zones,
+      positions: nextPositions,
+      engagements,
+    };
+
+    await this.saveCombatState(sessionId, combatState);
+
+    return {
+      success: true,
+      message: `Battlefield set with ${zones.length} zones.`,
+      battlefield: combatState.battlefield,
+    };
+  }
+
+  private async moveCombatant(
+    campaignId: string,
+    combatantId: string,
+    toZoneId: string,
+    disengage?: boolean
+  ): Promise<{ success: boolean; message: string; from_zone?: string; to_zone?: string; battlefield?: BattlefieldState }> {
+    const { combatState, sessionId } = await this.loadCombatState(campaignId);
+    if (!combatState || !combatState.turnOrder) {
+      return { success: false, message: 'No active combat to move within.' };
+    }
+
+    if (!combatState.battlefield) {
+      return { success: false, message: 'No battlefield defined. Call set_battlefield first.' };
+    }
+
+    const { zones, positions, engagements } = combatState.battlefield as BattlefieldState;
+    const zoneMap = new Map(zones.map((z) => [z.id, z]));
+    const destination = zoneMap.get(toZoneId);
+
+    if (!destination) {
+      return { success: false, message: 'Destination zone not found on the battlefield.' };
+    }
+
+    const fromZoneId = positions[combatantId];
+    if (fromZoneId === toZoneId) {
+      return { success: true, message: `${combatantId} is already in ${destination.name}.`, from_zone: fromZoneId, to_zone: toZoneId, battlefield: combatState.battlefield };
+    }
+
+    if (fromZoneId) {
+      const fromZone = zoneMap.get(fromZoneId);
+      const adjacent =
+        !fromZone ||
+        fromZoneId === toZoneId ||
+        (Array.isArray(fromZone?.adjacentTo) && fromZone!.adjacentTo!.includes(toZoneId)) ||
+        (Array.isArray(destination.adjacentTo) && destination.adjacentTo.includes(fromZoneId));
+
+      if (!adjacent) {
+        return { success: false, message: `${fromZone?.name || 'Current zone'} is not adjacent to ${destination.name}.`, from_zone: fromZoneId, to_zone: toZoneId };
+      }
+    }
+
+    const isEngaged = Array.isArray(engagements)
+      ? engagements.some((pair) => pair.a === combatantId || pair.b === combatantId)
+      : false;
+
+    if (isEngaged && fromZoneId && fromZoneId !== toZoneId && !disengage) {
+      return { success: false, message: 'Combatant is engaged; set disengage=true to move away safely.', from_zone: fromZoneId, to_zone: toZoneId };
+    }
+
+    const remainingEngagements = Array.isArray(engagements)
+      ? engagements.filter((pair) => pair.a !== combatantId && pair.b !== combatantId)
+      : [];
+
+    const updatedPositions = { ...positions, [combatantId]: toZoneId };
+
+    combatState.battlefield = {
+      zones,
+      positions: updatedPositions,
+      engagements: remainingEngagements,
+    };
+
+    await this.saveCombatState(sessionId, combatState);
+
+    return {
+      success: true,
+      message: `Moved to ${destination.name}${isEngaged && disengage ? ' (disengaged)' : ''}.`,
+      from_zone: fromZoneId,
+      to_zone: toZoneId,
+      battlefield: combatState.battlefield,
+    };
+  }
+
   /**
    * Get the current combat turn order and whose turn it is
    */
   private async getTurnOrder(campaignId: string): Promise<any> {
-    const pool = (await import('../utils/database')).getDatabase();
-    
-    // Get active session
-    const sessionRes = await pool.query(
-      'SELECT id FROM sessions WHERE campaign_id = $1 AND state = $2 LIMIT 1',
-      [campaignId, 'active']
-    );
-    
-    if (sessionRes.rows.length === 0) {
-      return { error: 'No active combat session' };
-    }
-    
-    const sessionId = sessionRes.rows[0].id;
-    
-    // Get combat state from Redis if available
-    const redis = (await import('../utils/redis')).getRedis();
-    const combatKey = `combat:${sessionId}`;
-    
-    let combatState: any = null;
-    if (redis) {
-      try {
-        const cached = await redis.get(combatKey);
-        if (cached) {
-          combatState = JSON.parse(cached);
-        }
-      } catch (err) {
-        logger.warn('Failed to get combat state from Redis', err);
+    try {
+      const { combatState } = await this.loadCombatState(campaignId);
+
+      if (!combatState || !combatState.turnOrder) {
+        return { error: 'No active combat' };
       }
-    }
-    
-    if (!combatState || !combatState.turnOrder) {
+
+      const currentTurnIndex = combatState.currentTurnIndex || 0;
+      const turnOrder = combatState.turnOrder || [];
+      const currentCombatant = turnOrder[currentTurnIndex];
+
+      return {
+        success: true,
+        round: combatState.round || 1,
+        current_turn_index: currentTurnIndex,
+        current_turn: currentTurnIndex + 1,
+        total_combatants: turnOrder.length,
+        current_combatant: currentCombatant
+          ? {
+              id: currentCombatant.id,
+              name: currentCombatant.name,
+              type: currentCombatant.type,
+              hp: currentCombatant.hp,
+              max_hp: currentCombatant.maxHp,
+            }
+          : null,
+        turn_order: turnOrder.map((c: any, idx: number) => ({
+          order: idx + 1,
+          name: c.name,
+          type: c.type,
+          hp: c.hp,
+          max_hp: c.maxHp,
+          is_current: idx === currentTurnIndex,
+        })),
+      };
+    } catch (err) {
+      logger.warn('Failed to get combat state', err);
       return { error: 'No active combat' };
     }
-
-    const currentTurnIndex = combatState.currentTurnIndex || 0;
-    const turnOrder = combatState.turnOrder || [];
-    const currentCombatant = turnOrder[currentTurnIndex];
-
-    return {
-      success: true,
-      round: combatState.round || 1,
-      current_turn_index: currentTurnIndex,
-      current_turn: currentTurnIndex + 1,
-      total_combatants: turnOrder.length,
-      current_combatant: currentCombatant ? {
-        id: currentCombatant.id,
-        name: currentCombatant.name,
-        type: currentCombatant.type, // 'player' or 'enemy'
-        hp: currentCombatant.hp,
-        max_hp: currentCombatant.maxHp
-      } : null,
-      turn_order: turnOrder.map((c: any, idx: number) => ({
-        order: idx + 1,
-        name: c.name,
-        type: c.type,
-        hp: c.hp,
-        max_hp: c.maxHp,
-        is_current: idx === currentTurnIndex
-      }))
-    };
   }
 
   /**
    * End the current combatant's turn and advance to the next
    */
   private async endCurrentTurn(campaignId: string, combatantId: string): Promise<any> {
-    const pool = (await import('../utils/database')).getDatabase();
-    
-    // Get active session
-    const sessionRes = await pool.query(
-      'SELECT id FROM sessions WHERE campaign_id = $1 AND state = $2 LIMIT 1',
-      [campaignId, 'active']
-    );
-    
-    if (sessionRes.rows.length === 0) {
-      return { error: 'No active combat session' };
-    }
-    
-    const sessionId = sessionRes.rows[0].id;
-    
-    // Get combat state from Redis
-    const redis = (await import('../utils/redis')).getRedis();
-    const combatKey = `combat:${sessionId}`;
-    
-    if (!redis) {
-      return { error: 'Combat system not available' };
-    }
-
     try {
-      const cached = await redis.get(combatKey);
-      if (!cached) {
+      const { combatState, sessionId } = await this.loadCombatState(campaignId);
+
+      if (!combatState || !combatState.turnOrder) {
         return { error: 'No active combat' };
       }
-      
-      const combatState = JSON.parse(cached);
+
       const turnOrder = combatState.turnOrder || [];
       const currentTurnIndex = combatState.currentTurnIndex || 0;
       const currentCombatant = turnOrder[currentTurnIndex];
 
-      // Verify the combatant ID matches
       if (currentCombatant.id !== combatantId) {
-        return { 
+        return {
           error: `It is ${currentCombatant.name}'s turn, not the specified combatant. Use get_turn_order to check whose turn it is.`,
-          current_turn: currentCombatant.name
+          current_turn: currentCombatant.name,
         };
       }
 
-      // Advance to next turn
       const nextTurnIndex = (currentTurnIndex + 1) % turnOrder.length;
       combatState.currentTurnIndex = nextTurnIndex;
 
-      // If we wrapped around to turn 0, increment the round
       if (nextTurnIndex === 0) {
         combatState.round = (combatState.round || 1) + 1;
       }
 
-      // Save updated combat state
-      await redis.set(combatKey, JSON.stringify(combatState), 'EX', 3600);
+      await this.saveCombatState(sessionId, combatState);
 
       const nextCombatant = turnOrder[nextTurnIndex];
 
@@ -1432,8 +1741,8 @@ export class ToolExecutor {
           name: nextCombatant.name,
           type: nextCombatant.type,
           hp: nextCombatant.hp,
-          max_hp: nextCombatant.maxHp
-        }
+          max_hp: nextCombatant.maxHp,
+        },
       };
     } catch (err) {
       logger.error('Failed to advance turn', err);

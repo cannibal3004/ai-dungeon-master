@@ -33,7 +33,8 @@ async function processNarrativeEnhancements(
   sessionId: string | null,
   narrative: string,
   room: string,
-  result: any
+  result: any,
+  ttsEnabled?: boolean
 ) {
   if (!socket) {
     logger.warn('No socket provided for narrative enhancements');
@@ -44,10 +45,11 @@ async function processNarrativeEnhancements(
     // Generate TTS
     logger.info('Starting TTS generation for narrative', {
       sessionId,
-      ttsEnabled: getAIDMService()['ttsService'].isEnabled(),
+      serviceEnabled: getAIDMService()['ttsService'].isEnabled(),
+      userEnabled: ttsEnabled,
     });
     
-    if (sessionId && getAIDMService()['ttsService'].isEnabled()) {
+    if (sessionId && getAIDMService()['ttsService'].isEnabled() && ttsEnabled) {
       try {
         const audio = await getAIDMService()['ttsService'].synthesize(sessionId, narrative);
         if (audio?.url) {
@@ -172,7 +174,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
   /**
    * Player sends an action/message to the DM
    */
-  socket.on('game:action', async (data: { campaignId: string; action: string; characterId?: string }) => {
+  socket.on('game:action', async (data: { campaignId: string; action: string; characterId?: string; ttsEnabled?: boolean }) => {
     try {
       const userId = getUserId();
       const room = ensureCampaignRoom(data.campaignId);
@@ -248,7 +250,7 @@ export function setupGameEvents(io: Server, socket: Socket) {
 
       // Now do TTS and ambience generation asynchronously and send updates when ready
       // These are fire-and-forget: we don't await, just start the background tasks
-      processNarrativeEnhancements(socket, data.campaignId, sessionId, result.narrative, room, result).catch(err => {
+      processNarrativeEnhancements(socket, data.campaignId, sessionId, result.narrative, room, result, data.ttsEnabled).catch(err => {
         logger.error('Error processing narrative enhancements:', err);
       });
 
@@ -630,5 +632,29 @@ export function setupGameEvents(io: Server, socket: Socket) {
       characterName: data.characterName,
       isTyping: data.isTyping,
     });
+  });
+
+  /**
+   * Audio cache resolved - update database with resolved cached path
+   */
+  socket.on('game:audio-cache-resolved', async (data: {
+    campaignId: string;
+    narrativeContent: string;
+    cachedUrl: string;
+  }) => {
+    try {
+      logger.info('Updating cached audio URL in database', {
+        campaignId: data.campaignId,
+        cachedUrl: data.cachedUrl,
+        contentPreview: data.narrativeContent.substring(0, 50),
+      });
+      await getAIDMService().updateChatMessageAudioUrl(
+        data.campaignId,
+        data.narrativeContent,
+        data.cachedUrl
+      );
+    } catch (err) {
+      logger.error('Failed to update cached audio URL:', err);
+    }
   });
 }

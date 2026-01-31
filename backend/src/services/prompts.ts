@@ -107,6 +107,21 @@ export interface DMContext {
       maxHp: number;
       initiative: number;
     }>;
+    battlefield?: {
+      zones: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        adjacentTo?: string[];
+        cover?: 'none' | 'light' | 'heavy';
+        elevation?: 'low' | 'high';
+        terrain?: 'normal' | 'difficult';
+        hazards?: string;
+        lighting?: string;
+      }>;
+      positions: Record<string, string>;
+      engagements: Array<{ a: string; b: string }>;
+    };
   };
 }
 
@@ -146,6 +161,11 @@ COMBAT ACTIONS:
 - Track HP changes with update_character_hp() for players/companions
 - Describe enemy actions clearly but briefly on their turns
 - Present clear combat choices: "Attack which enemy? Move where? Use which ability?"
+
+BATTLEFIELD / ZONES:
+- If combat starts and no layout exists, define 4-8 zones with set_battlefield(zones) including adjacency, cover, terrain, hazards, lighting.
+- For movement, use move_combatant(combatantId, toZoneId, disengage?) BEFORE narrating repositioning. Only adjacent zones; require disengage if leaving engagement.
+- Keep positions in sync and describe cover/terrain effects in prose (no tables).
 
 PACING:
 - No long narrative diversions during combat
@@ -242,6 +262,8 @@ OTHER AVAILABLE TOOLS:
 - advance_time(hours?, minutes?, description?): advance in-game time and track rest/travel
 - suggest_enemies(partyLevel, difficulty?, environment?, enemyType?): get CR-appropriate enemy suggestions
 - start_combat(enemies: [{ name, hp, maxHp, ac, dexterity }]): initialize structured combat tracking
+- set_battlefield(zones, positions?, engagements?): define 4-8 zones with adjacency, cover/terrain/hazards, and optional placements
+- move_combatant(combatantId, toZoneId, disengage?): move along adjacency; require disengage to leave engagement
 - lookup_enemy(name: string): fetch SRD monster stats for accurate combat descriptions
 - upsert_world_entities(locations, npcs, shops, items): create/update world entities with canonical names
 - add_companions(companions) / remove_companions(names): manage party allies/followers
@@ -481,6 +503,58 @@ export function buildDMPrompt(context: DMContext, playerAction: string): ChatMes
     messages.push({
       role: 'system',
       content: locationDetails.join('\n'),
+    });
+  }
+
+  // Add battlefield layout if in combat and zones exist
+  if (isInCombat && context.combatState?.battlefield) {
+    const bf = context.combatState.battlefield;
+    const zoneMap = new Map((bf.zones || []).map((z) => [z.id, z]));
+    const combatantMap = new Map((context.combatState.turnOrder || []).map((c) => [c.id, c]));
+
+    const zoneLines = (bf.zones || []).map((z) => {
+      const tags: string[] = [];
+      if (z.cover && z.cover !== 'none') tags.push(`cover: ${z.cover}`);
+      if (z.terrain && z.terrain !== 'normal') tags.push(`terrain: ${z.terrain}`);
+      if (z.elevation && z.elevation !== 'low') tags.push(`elevation: ${z.elevation}`);
+      if (z.hazards) tags.push(`hazards: ${z.hazards}`);
+      if (z.lighting) tags.push(`lighting: ${z.lighting}`);
+      const adj = Array.isArray(z.adjacentTo) && z.adjacentTo.length > 0 ? ` | Adjacent: ${z.adjacentTo.join(', ')}` : '';
+      const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+      const desc = z.description ? ` - ${z.description}` : '';
+      return `${z.name}${tagStr}${desc}${adj}`;
+    }).join('\n');
+
+    const occupantsByZone: Record<string, string[]> = {};
+    Object.entries(bf.positions || {}).forEach(([combatantId, zoneId]) => {
+      if (!zoneMap.has(zoneId)) return;
+      const name = combatantMap.get(combatantId)?.name || combatantId;
+      if (!occupantsByZone[zoneId]) occupantsByZone[zoneId] = [];
+      occupantsByZone[zoneId].push(name);
+    });
+
+    const positionsLine = Object.entries(occupantsByZone)
+      .map(([zoneId, names]) => `${zoneMap.get(zoneId)?.name || zoneId}: ${names.join(', ')}`)
+      .join(' | ');
+
+    const engagementsLine = Array.isArray(bf.engagements) && bf.engagements.length > 0
+      ? `Engaged pairs: ${bf.engagements
+          .map((pair) => {
+            const a = combatantMap.get(pair.a)?.name || pair.a;
+            const b = combatantMap.get(pair.b)?.name || pair.b;
+            return `${a} vs ${b}`;
+          })
+          .join('; ')}`
+      : '';
+
+    const layoutLines = ['Battlefield layout:', zoneLines];
+    if (positionsLine) layoutLines.push(`Positions: ${positionsLine}`);
+    if (engagementsLine) layoutLines.push(engagementsLine);
+    layoutLines.push('Movement: move_combatant only to adjacent zones; disengage to leave engagements.');
+
+    messages.push({
+      role: 'system',
+      content: layoutLines.join('\n'),
     });
   }
 
